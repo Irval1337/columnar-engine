@@ -9,14 +9,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.fetchcontent
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-
 jobs:
   asan:
     name: Tests (ASAN+UBSAN)
     runs-on: ubuntu-24.04
+
+    env:
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.fetchcontent/asan
+      CCACHE_DIR: ${{ github.workspace }}/.ccache/asan
 
     steps:
       - name: Checkout
@@ -27,18 +27,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build cmake clang ccache
 
-      - name: Cache FetchContent
+      - name: Cache FetchContent (asan)
         uses: actions/cache@v4
         with:
-          path: .fetchcontent
-          key: fetchcontent-${{ runner.os }}-${{ hashFiles('cmake/deps.cmake', 'CMakeLists.txt') }}
+          path: .fetchcontent/asan
+          key: fetchcontent-${{ runner.os }}-asan-${{ hashFiles('cmake/deps.cmake', 'CMakeLists.txt') }}
           restore-keys: |
-            fetchcontent-${{ runner.os }}-
+            fetchcontent-${{ runner.os }}-asan-
 
-      - name: Cache ccache
+      - name: Cache ccache (asan)
         uses: actions/cache@v4
         with:
-          path: .ccache
+          path: .ccache/asan
           key: ccache-${{ runner.os }}-asan-${{ github.sha }}
           restore-keys: |
             ccache-${{ runner.os }}-asan-
@@ -68,6 +68,10 @@ jobs:
     name: Tests (TSAN)
     runs-on: ubuntu-24.04
 
+    env:
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.fetchcontent/tsan
+      CCACHE_DIR: ${{ github.workspace }}/.ccache/tsan
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -77,18 +81,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build cmake clang ccache
 
-      - name: Cache FetchContent
+      - name: Cache FetchContent (tsan)
         uses: actions/cache@v4
         with:
-          path: .fetchcontent
-          key: fetchcontent-${{ runner.os }}-${{ hashFiles('cmake/deps.cmake', 'CMakeLists.txt') }}
+          path: .fetchcontent/tsan
+          key: fetchcontent-${{ runner.os }}-tsan-${{ hashFiles('cmake/deps.cmake', 'CMakeLists.txt') }}
           restore-keys: |
-            fetchcontent-${{ runner.os }}-
+            fetchcontent-${{ runner.os }}-tsan-
 
-      - name: Cache ccache
+      - name: Cache ccache (tsan)
         uses: actions/cache@v4
         with:
-          path: .ccache
+          path: .ccache/tsan
           key: ccache-${{ runner.os }}-tsan-${{ github.sha }}
           restore-keys: |
             ccache-${{ runner.os }}-tsan-
@@ -121,6 +125,10 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [asan, tsan]
 
+    env:
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.fetchcontent/release
+      CCACHE_DIR: ${{ github.workspace }}/.ccache/release
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -130,18 +138,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build cmake g++ ccache
 
-      - name: Cache FetchContent
+      - name: Cache FetchContent (release)
         uses: actions/cache@v4
         with:
-          path: .fetchcontent
-          key: fetchcontent-${{ runner.os }}-${{ hashFiles('cmake/deps.cmake', 'CMakeLists.txt') }}
+          path: .fetchcontent/release
+          key: fetchcontent-${{ runner.os }}-release-${{ hashFiles('cmake/deps.cmake', 'CMakeLists.txt') }}
           restore-keys: |
-            fetchcontent-${{ runner.os }}-
+            fetchcontent-${{ runner.os }}-release-
 
-      - name: Cache ccache
+      - name: Cache ccache (release)
         uses: actions/cache@v4
         with:
-          path: .ccache
+          path: .ccache/release
           key: ccache-${{ runner.os }}-release-${{ github.sha }}
           restore-keys: |
             ccache-${{ runner.os }}-release-
