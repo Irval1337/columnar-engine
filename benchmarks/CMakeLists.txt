@@ -1,5 +1,5 @@
 add_executable(columnar_bench
-  bench_bruh.cpp
+  bench_csv.cpp
 )
 
 target_link_libraries(columnar_bench

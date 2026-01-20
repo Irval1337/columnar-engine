@@ -12,10 +12,10 @@ option(COLUMNAR_BUILD_BENCHMARKS "Build benchmarks" ON)
 include(cmake/deps.cmake)
 
 add_library(columnar_lib
-  src/add.cpp
+  src/core/column.cpp
 )
 
-target_include_directories(columnar_lib PUBLIC include)
+target_include_directories(columnar_lib PUBLIC ${PROJECT_SOURCE_DIR}/include)
 
 target_compile_options(columnar_lib PRIVATE -Wall -Wextra -Wpedantic)
 
