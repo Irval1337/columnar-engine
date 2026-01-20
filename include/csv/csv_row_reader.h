@@ -81,7 +81,7 @@ public:
                     in_quotes = true;
                     was_quoted = true;
                 } else if (c == '\n') {
-                    row.emplace_back(std::move(field), was_quoted);
+                    row.emplace_back(Field{std::move(field), was_quoted});
                     return row;
                 } else {
                     field += c;
@@ -90,7 +90,10 @@ public:
         }
 
         if (!field.empty() || !row.empty()) {
-            row.emplace_back(std::move(field), was_quoted);
+            if (in_quotes) {
+                THROW_RUNTIME_ERROR("Got EOF inside the quotes");
+            }
+            row.emplace_back(Field{std::move(field), was_quoted});
             return row;
         }
         return std::nullopt;

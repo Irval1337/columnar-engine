@@ -41,7 +41,7 @@ public:
     }
 
     static void WriteToStream(std::ostream& os, const core::Schema& schema) {
-        for (auto& field : schema.GetFields()) {
+        for (const auto& field : schema.GetFields()) {
             os << field.name << "," << core::DataTypeToString(field.type);
             if (field.nullable) {
                 os << ",nullable";

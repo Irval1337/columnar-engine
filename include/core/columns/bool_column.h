@@ -66,6 +66,7 @@ public:
         if (nullable_) {
             AppendBit(is_null_, true);
         }
+        ++size_;
     }
 
     std::unique_ptr<Column> CloneEmpty() const override {

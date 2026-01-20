@@ -11,7 +11,7 @@ public:
 
     Batch(Schema schema) : schema_(std::move(schema)) {
         columns_.reserve(schema_.FieldsCount());
-        for(auto& field : schema_.GetFields()) {
+        for (auto& field : schema_.GetFields()) {
             columns_.emplace_back(MakeColumn(field.type, field.nullable));
         }
     }
