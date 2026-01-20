@@ -1,3 +1,5 @@
+#pragma once
+
 #include <core/batch.h>
 
 namespace columnar::core {

@@ -3,12 +3,12 @@
 #include <core/columns/abstract_column.h>
 #include <core/datatype.h>
 #include <util/macro.h>
-#include <util/parse.h>
 
+#include <string>
 #include <vector>
 
 namespace columnar::core {
-// TODO (@Irval1337): continuous string storage
+// (@Irval1337) TODO: continuous string storage
 class StringColumn final : public Column {
 public:
     StringColumn(bool nullable = false) : nullable_(nullable) {
@@ -18,11 +18,11 @@ public:
         return DataType::String;
     }
 
-    size_t Size() const override {
+    std::size_t Size() const override {
         return data_.size();
     }
 
-    void Reserve(size_t n) override {
+    void Reserve(std::size_t n) override {
         data_.reserve(n);
         if (nullable_) {
             is_null_.reserve(n);
@@ -33,11 +33,23 @@ public:
         return nullable_;
     }
 
-    bool IsNull(size_t i) const override {
-        if (!nullable_) {
-            return false;
+    bool IsNull(std::size_t i) const override {
+        return nullable_ && is_null_[i];
+    }
+
+    void AppendFromString(std::string_view s) override {
+        data_.emplace_back(s);
+        if (nullable_) {
+            is_null_.push_back(false);
         }
-        return is_null_[i];
+    }
+
+    void AppendNull() override {
+        if (!nullable_) {
+            THROW_RUNTIME_ERROR("Cannot set not nullable value to null");
+        }
+        data_.emplace_back();
+        is_null_.push_back(true);
     }
 
     void AppendDefault() override {
@@ -47,25 +59,23 @@ public:
         }
     }
 
-    void AppendFromString(std::string_view s, bool is_null) override {
-        if (nullable_) {
-            is_null_.push_back(is_null);
-        } else if (is_null) {
-            THROW_RUNTIME_ERROR("Cannot set not nullable value to null");
-        }
-
-        if (is_null) {
-            data_.emplace_back();
-            return;
-        }
-        data_.emplace_back(s);
-    }
-
     std::unique_ptr<Column> CloneEmpty() const override {
         return std::make_unique<StringColumn>(nullable_);
     }
 
+    void Clear() override {
+        data_.clear();
+        is_null_.clear();
+    }
+
     const std::string& Get(size_t i) const {
+        return data_[i];
+    }
+
+    std::string GetAsString(std::size_t i) const override {
+        if (IsNull(i)) {
+            return "";
+        }
         return data_[i];
     }
 

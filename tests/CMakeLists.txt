@@ -1,5 +1,5 @@
 add_executable(columnar_tests
-  test_bruh.cpp
+  test_csv.cpp
 )
 
 target_link_libraries(columnar_tests

@@ -3,10 +3,11 @@
 #include <core/datatype.h>
 
 #include <memory>
+#include <string>
 #include <string_view>
-#include <cstdint>
 
 namespace columnar::core {
+
 class Column {
 public:
     virtual ~Column() = default;
@@ -17,7 +18,9 @@ public:
 
     virtual void Reserve(std::size_t n) = 0;
 
-    virtual void AppendFromString(std::string_view s, bool is_null) = 0;
+    virtual void AppendFromString(std::string_view s) = 0;
+
+    virtual void AppendNull() = 0;
 
     virtual void AppendDefault() = 0;
 
@@ -26,5 +29,9 @@ public:
     virtual bool IsNull(std::size_t i) const = 0;
 
     virtual std::unique_ptr<Column> CloneEmpty() const = 0;
+
+    virtual std::string GetAsString(std::size_t i) const = 0;
+
+    virtual void Clear() = 0;
 };
 }  // namespace columnar::core

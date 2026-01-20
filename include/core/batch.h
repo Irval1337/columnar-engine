@@ -1,3 +1,5 @@
+#pragma once
+
 #include <core/schema.h>
 #include <core/column.h>
 #include <util/macro.h>

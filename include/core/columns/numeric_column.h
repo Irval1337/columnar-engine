@@ -5,6 +5,7 @@
 #include <util/macro.h>
 #include <util/parse.h>
 
+#include <string>
 #include <vector>
 
 namespace columnar::core {
@@ -18,11 +19,11 @@ public:
         return type;
     }
 
-    size_t Size() const override {
+    std::size_t Size() const override {
         return data_.size();
     }
 
-    void Reserve(size_t n) override {
+    void Reserve(std::size_t n) override {
         data_.reserve(n);
         if (nullable_) {
             is_null_.reserve(n);
@@ -33,11 +34,23 @@ public:
         return nullable_;
     }
 
-    bool IsNull(size_t i) const override {
-        if (!nullable_) {
-            return false;
+    bool IsNull(std::size_t i) const override {
+        return nullable_ && is_null_[i];
+    }
+
+    void AppendFromString(std::string_view s) override {
+        data_.emplace_back(util::ParseFromString<T>(s));
+        if (nullable_) {
+            is_null_.push_back(false);
         }
-        return is_null_[i];
+    }
+
+    void AppendNull() override {
+        if (!nullable_) {
+            THROW_RUNTIME_ERROR("Cannot set not nullable value to null");
+        }
+        data_.emplace_back();
+        is_null_.push_back(true);
     }
 
     void AppendDefault() override {
@@ -47,22 +60,28 @@ public:
         }
     }
 
-    void AppendFromString(std::string_view s, bool is_null) override {
-        if (nullable_) {
-            is_null_.push_back(is_null);
-        } else if (is_null) {
-            THROW_RUNTIME_ERROR("Cannot set not nullable value to null");
-        }
-
-        if (is_null) {
-            data_.emplace_back();
-            return;
-        }
-        data_.emplace_back(util::ParseFromString<T>(s));
-    }
-
     std::unique_ptr<Column> CloneEmpty() const override {
         return std::make_unique<NumericColumn<T, type>>(nullable_);
+    }
+
+    void Clear() override {
+        data_.clear();
+        is_null_.clear();
+    }
+
+    const T& Get(std::size_t i) const {
+        return data_[i];
+    }
+
+    std::string GetAsString(std::size_t i) const override {
+        if (IsNull(i)) {
+            return "";
+        }
+        if constexpr (std::is_same_v<T, bool>) {
+            return data_[i] ? "true" : "false";
+        } else {
+            return std::to_string(data_[i]);
+        }
     }
 
 private:
