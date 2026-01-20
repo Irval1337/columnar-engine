@@ -14,10 +14,9 @@ public:
     }
 
     void Write(const core::Batch& batch) override {
-        static bool need_header = options_.has_header;
-        if (need_header) {
+        if (options_.has_header && !header_written_) {
             WriteHeader(batch.GetSchema());
-            need_header = false;
+            header_written_ = true;
         }
 
         for (std::size_t row = 0; row < batch.RowsCount(); ++row) {
@@ -26,7 +25,12 @@ public:
                     os_ << options_.delimiter;
                 }
                 if (!batch.ColumnAt(col).IsNull(row)) {
-                    WriteField(batch.ColumnAt(col).GetAsString(row));
+                    std::string value = batch.ColumnAt(col).GetAsString(row);
+                    if (value.empty()) {
+                        os_ << options_.quote_char << options_.quote_char;
+                    } else {
+                        WriteField(value);
+                    }
                 }
             }
             os_ << '\n';

@@ -136,22 +136,39 @@ TEST(CSVBatchReader, ReadBatches) {
     EXPECT_FALSE(reader.ReadNext());
 }
 
-TEST(CSVBatchWriter, WriteBatch) {
+TEST(CSVBatchReader, BoolColumn) {
     core::Schema schema(
-        {core::Field("a", core::DataType::Int64), core::Field("b", core::DataType::String)});
+        {core::Field("is_gay", core::DataType::Bool), core::Field("name", core::DataType::String)});
+    std::istringstream in("true,first\nfalse,second\n1,third\n0,aboba");
+    csv::CSVBatchReader reader(in, schema, {});
 
+    auto batch = reader.ReadNext();
+    ASSERT_TRUE(batch);
+    EXPECT_EQ(batch->RowsCount(), 4);
+    EXPECT_EQ(batch->ColumnAt(0).GetAsString(0), "true");
+    EXPECT_EQ(batch->ColumnAt(0).GetAsString(1), "false");
+    EXPECT_EQ(batch->ColumnAt(0).GetAsString(2), "true");
+    EXPECT_EQ(batch->ColumnAt(0).GetAsString(3), "false");
+}
+
+TEST(CSVBatchWriter, WriteBatch) {
+    core::Schema schema({core::Field("a", core::DataType::Int64),
+                         core::Field("b", core::DataType::String),
+                         core::Field("c", core::DataType::Bool)});
     core::Batch batch(schema);
     batch.ColumnAt(0).AppendFromString("42");
     batch.ColumnAt(1).AppendFromString("hello");
+    batch.ColumnAt(2).AppendFromString("true");
     batch.ColumnAt(0).AppendFromString("1337");
     batch.ColumnAt(1).AppendFromString("world");
+    batch.ColumnAt(2).AppendFromString("false");
 
     std::ostringstream out;
     csv::CSVBatchWriter writer(out, {});
     writer.Write(batch);
     writer.Flush();
 
-    EXPECT_EQ(NormalizeCSV(out.str()), NormalizeCSV("42,hello\n1337,world"));
+    EXPECT_EQ(NormalizeCSV(out.str()), NormalizeCSV("42,hello,true\n1337,world,false\n"));
 }
 
 TEST(CSVBatchWriter, QuotesAndCommas) {
@@ -166,10 +183,10 @@ TEST(CSVBatchWriter, QuotesAndCommas) {
     writer.Write(batch);
     writer.Flush();
 
-    EXPECT_EQ(NormalizeCSV(out.str()), NormalizeCSV("king,,, arthur\ncame a lot"));
+    EXPECT_EQ(out.str(), "\"king,,, arthur\"\n\"came \"\"a lot\"\"\"\n");
 }
 
-TEST(CSVFullInterface, DataIsntChanged) {
+TEST(CSVFullInterface, DataIsNotChanged) {
     core::Schema schema(
         {core::Field("id", core::DataType::Int64), core::Field("name", core::DataType::String)});
     std::string str = "1,a\n2,b";
@@ -206,4 +223,63 @@ TEST(CSVBatchReader, InvalidRowsSize) {
     csv::CSVBatchReader reader(in, schema, {});
 
     EXPECT_THROW(reader.ReadNext(), std::runtime_error);
+}
+
+TEST(CSVBatchReader, SkipHeader) {
+    core::Schema schema(
+        {core::Field("x", core::DataType::Int64), core::Field("y", core::DataType::String)});
+    std::istringstream in("x,y\n1,hello\n2,world");
+    csv::CSVBatchReader reader(in, schema, {.has_header = true});
+
+    auto batch = reader.ReadNext();
+    ASSERT_TRUE(batch);
+    EXPECT_EQ(batch->RowsCount(), 2);
+    EXPECT_EQ(batch->ColumnAt(0).GetAsString(0), "1");
+    EXPECT_EQ(batch->ColumnAt(0).GetAsString(1), "2");
+    EXPECT_EQ(batch->ColumnAt(1).GetAsString(0), "hello");
+    EXPECT_EQ(batch->ColumnAt(1).GetAsString(1), "world");
+}
+
+TEST(CSVBatchWriter, WriteHeader) {
+    core::Schema schema(
+        {core::Field("a", core::DataType::Int64), core::Field("b", core::DataType::String)});
+    std::ostringstream out;
+    csv::CSVBatchWriter writer(out, {.has_header = true});
+
+    core::Batch b1(schema);
+    b1.ColumnAt(0).AppendFromString("1");
+    b1.ColumnAt(1).AppendFromString("x");
+    writer.Write(b1);
+    core::Batch b2(schema);
+    b2.ColumnAt(0).AppendFromString("2");
+    b2.ColumnAt(1).AppendFromString("y");
+    writer.Write(b2);
+
+    EXPECT_EQ(NormalizeCSV(out.str()), NormalizeCSV("a,b\n1,x\n2,y\n"));
+}
+
+TEST(CSVFullInterface, NullAndEmptyString) {
+    core::Schema schema({core::Field("a", core::DataType::String, true),
+                         core::Field("b", core::DataType::String, true)});
+    std::istringstream in(",\"\"\n\"\",\n1,2");
+    csv::CSVBatchReader reader(in, schema, {});
+
+    auto batch = reader.ReadNext();
+    ASSERT_TRUE(batch);
+    EXPECT_EQ(batch->RowsCount(), 3);
+    EXPECT_TRUE(batch->ColumnAt(0).IsNull(0));
+    EXPECT_FALSE(batch->ColumnAt(1).IsNull(0));
+    EXPECT_EQ(batch->ColumnAt(1).GetAsString(0), "");
+    EXPECT_FALSE(batch->ColumnAt(0).IsNull(1));
+    EXPECT_EQ(batch->ColumnAt(0).GetAsString(1), "");
+    EXPECT_TRUE(batch->ColumnAt(1).IsNull(1));
+    EXPECT_EQ(batch->ColumnAt(0).GetAsString(2), "1");
+    EXPECT_EQ(batch->ColumnAt(1).GetAsString(2), "2");
+
+    std::ostringstream out;
+    csv::CSVBatchWriter writer(out, {});
+    writer.Write(*batch);
+    writer.Flush();
+
+    EXPECT_EQ(out.str(), ",\"\"\n\"\",\n1,2\n");
 }

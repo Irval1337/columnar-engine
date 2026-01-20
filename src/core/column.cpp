@@ -11,6 +11,8 @@ std::unique_ptr<Column> MakeColumn(DataType id, bool nullable) {
             return std::make_unique<DoubleColumn>(nullable);
         case DataType::String:
             return std::make_unique<StringColumn>(nullable);
+        case DataType::Bool:
+            return std::make_unique<BoolColumn>(nullable);
         default:
             THROW_NOT_IMPLEMENTED;
     }

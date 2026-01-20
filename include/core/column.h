@@ -3,6 +3,7 @@
 #include <core/columns/abstract_column.h>
 #include <core/columns/numeric_column.h>
 #include <core/columns/string_column.h>
+#include <core/columns/bool_column.h>
 #include <core/datatype.h>
 
 namespace columnar::core {

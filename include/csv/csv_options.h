@@ -9,6 +9,6 @@ struct CSVOptions {
     char delimiter = ',';
     char quote_char = '"';
     bool has_header = false;
-    std::size_t batch_rows_size = 9359;  // 1337 * 7, isn't is a nice magic constant?
+    std::size_t batch_rows_size = 9359;  // 1337 * 7, isn't it a nice magic constant?
 };
 }  // namespace columnar::csv

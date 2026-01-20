@@ -14,6 +14,6 @@
     do {                                                                                      \
         if (!(cond)) {                                                                        \
             throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__) + \
-                                     ": condition '" + #cond + "' is not satistfied");        \
+                                     ": condition '" + #cond + "' is not satisfied");        \
         }                                                                                     \
     } while (false)

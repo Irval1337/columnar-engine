@@ -77,11 +77,7 @@ public:
         if (IsNull(i)) {
             return "";
         }
-        if constexpr (std::is_same_v<T, bool>) {
-            return data_[i] ? "true" : "false";
-        } else {
-            return std::to_string(data_[i]);
-        }
+        return std::to_string(data_[i]);
     }
 
 private:

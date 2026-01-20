@@ -11,7 +11,37 @@
 namespace columnar::csv {
 class CSVRowReader {
 public:
-    using Row = std::vector<std::string>;
+    // I hope that creating such a strange struct won't be too bad
+    struct Field {
+        std::string value;
+        bool was_quoted = false;
+
+        operator const std::string&() const {
+            return value;
+        }
+        operator std::string_view() const {
+            return value;
+        }
+        bool empty() const {  // NOLINT
+            return value.empty();
+        }
+        std::size_t size() const {  // NOLINT
+            return value.size();
+        }
+        const char* c_str() const {  // NOLINT
+            return value.c_str();
+        }
+        bool operator==(const std::string& other) const {
+            return value == other;
+        }
+        bool operator==(std::string_view other) const {
+            return value == other;
+        }
+        bool operator==(const char* other) const {
+            return value == other;
+        }
+    };
+    using Row = std::vector<Field>;
 
 public:
     CSVRowReader(std::istream& is, CSVOptions options = {}) : is_(is), options_(options) {
@@ -28,6 +58,7 @@ public:
         Row row;
         std::string field;
         bool in_quotes = false;
+        bool was_quoted = false;
         char c;
         while (is_.get(c)) {
             if (in_quotes) {
@@ -43,12 +74,14 @@ public:
                 }
             } else {
                 if (c == options_.delimiter) {
-                    row.emplace_back(std::move(field));
+                    row.emplace_back(Field{std::move(field), was_quoted});
                     field.clear();
+                    was_quoted = false;
                 } else if (c == options_.quote_char) {
                     in_quotes = true;
+                    was_quoted = true;
                 } else if (c == '\n') {
-                    row.emplace_back(std::move(field));
+                    row.emplace_back(std::move(field), was_quoted);
                     return row;
                 } else {
                     field += c;
@@ -57,7 +90,7 @@ public:
         }
 
         if (!field.empty() || !row.empty()) {
-            row.emplace_back(std::move(field));
+            row.emplace_back(std::move(field), was_quoted);
             return row;
         }
         return std::nullopt;

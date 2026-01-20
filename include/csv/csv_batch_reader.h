@@ -34,10 +34,11 @@ public:
 
             for (std::size_t i = 0; i < row->size(); ++i) {
                 auto& col = batch.ColumnAt(i);
-                if ((*row)[i].empty() && col.IsNullable()) {
+                auto& field = (*row)[i];
+                if (field.value.empty() && !field.was_quoted && col.IsNullable()) {
                     col.AppendNull();
                 } else {
-                    col.AppendFromString((*row)[i]);
+                    col.AppendFromString(field.value);
                 }
             }
             ++rows;

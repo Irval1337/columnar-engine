@@ -23,7 +23,7 @@ public:
         std::vector<core::Field> fields;
         while (auto row = reader.ReadRow()) {
             if (row->size() < 2) {
-                THROW_RUNTIME_ERROR("Invalid schema row:");
+                THROW_RUNTIME_ERROR("Invalid schema row");
             }
             auto type = core::StringToDataType((*row)[1]);
             bool nullable = row->size() >= 3 && ((*row)[2] == "nullable" || (*row)[2] == "true");
