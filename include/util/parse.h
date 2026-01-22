@@ -13,18 +13,7 @@
 #include <cstdlib>
 
 namespace columnar::util {
-inline bool LowercaseEquals(std::string_view a, std::string_view b) {
-    if (a.size() != b.size()) {
-        return false;
-    }
-    for (size_t i = 0; i < a.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(a[i])) !=
-            std::tolower(static_cast<unsigned char>(b[i]))) {
-            return false;
-        }
-    }
-    return true;
-}
+bool LowercaseEquals(std::string_view a, std::string_view b);
 
 template <typename T>
 T ParseFromString(std::string_view s) {

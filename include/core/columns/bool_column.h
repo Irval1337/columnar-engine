@@ -2,16 +2,24 @@
 
 #include <core/columns/abstract_column.h>
 #include <core/datatype.h>
+#include <util/macro.h>
+#include <util/parse.h>
+#include <util/bit_vector.h>
 
 #include <cstddef>
 #include <string>
 #include <vector>
 
 namespace columnar::core {
-// I'm planning to add simd optimizations in the future
+// Serializing schema:
+// [is_null][data]
 class BoolColumn : public Column {
 public:
     BoolColumn(bool nullable = false) : nullable_(nullable) {
+    }
+
+    BoolColumn(util::BitVector&& data, util::BitVector&& is_null, bool nullable, std::size_t size)
+        : data_(std::move(data)), nullable_(nullable), is_null_(std::move(is_null)), size_(size) {
     }
 
     DataType GetDataType() const override {
@@ -23,10 +31,9 @@ public:
     }
 
     void Reserve(std::size_t n) override {
-        auto compact_size = (n + 63) / 64;
-        data_.reserve(compact_size);
+        data_.Reserve(n);
         if (nullable_) {
-            is_null_.reserve(compact_size);
+            is_null_.Reserve(n);
         }
     }
 
@@ -35,19 +42,13 @@ public:
     }
 
     bool IsNull(std::size_t i) const override {
-        return nullable_ && GetBit(is_null_, i);
+        return nullable_ && is_null_.Get(i);
     }
 
     void AppendFromString(std::string_view s) override {
-        if (s == "true" || s == "1") {
-            AppendBit(data_, true);
-        } else if (s == "false" || s == "0") {
-            AppendBit(data_, false);
-        } else {
-            THROW_RUNTIME_ERROR("Invalid bool value");
-        }
+        data_.PushBack(util::ParseFromString<bool>(s));
         if (nullable_) {
-            AppendBit(is_null_, false);
+            is_null_.PushBack(false);
         }
         ++size_;
     }
@@ -56,15 +57,15 @@ public:
         if (!nullable_) {
             THROW_RUNTIME_ERROR("Cannot set not nullable value to null");
         }
-        AppendBit(data_, false);
-        AppendBit(is_null_, true);
+        data_.PushBack(false);
+        is_null_.PushBack(true);
         ++size_;
     }
 
     void AppendDefault() override {
-        AppendBit(data_, false);
+        data_.PushBack(false);
         if (nullable_) {
-            AppendBit(is_null_, true);
+            is_null_.PushBack(true);
         }
         ++size_;
     }
@@ -74,13 +75,13 @@ public:
     }
 
     void Clear() override {
-        data_.clear();
-        is_null_.clear();
+        data_.Clear();
+        is_null_.Clear();
         size_ = 0;
     }
 
     bool Get(std::size_t i) const {
-        return GetBit(data_, i);
+        return data_.Get(i);
     }
 
     std::string GetAsString(std::size_t i) const override {
@@ -90,25 +91,18 @@ public:
         return Get(i) ? "true" : "false";
     }
 
+    const util::BitVector& GetData() const {
+        return data_;
+    }
+
+    const util::BitVector& GetNullMask() const {
+        return is_null_;
+    }
+
 private:
-    bool GetBit(const std::vector<uint64_t>& vec, std::size_t i) const {
-        return (vec[i / 64] >> (i % 64)) & 1;
-    }
-
-    // Warning: This method does not change size
-    void AppendBit(std::vector<uint64_t>& vec, bool value) {
-        auto idx = size_ % 64;
-        if (idx == 0) {
-            vec.push_back(0);
-        }
-        if (value) {
-            vec.back() |= 1ULL << idx;
-        }
-    }
-
-    std::vector<uint64_t> data_;
-    std::size_t size_ = 0;
+    util::BitVector data_;
     bool nullable_ = false;
-    std::vector<uint64_t> is_null_;
+    util::BitVector is_null_;
+    std::size_t size_ = 0;
 };
 }  // namespace columnar::core

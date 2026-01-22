@@ -13,6 +13,13 @@ include(cmake/deps.cmake)
 
 add_library(columnar_lib
   src/core/column.cpp
+  src/csv/csv_batch_reader.cpp
+  src/csv/csv_batch_writer.cpp
+  src/csv/csv_row_reader.cpp
+  src/csv/schema_manager.cpp
+  src/bruh/bruh_batch_reader.cpp
+  src/bruh/bruh_batch_writer.cpp
+  src/util/parse.cpp
 )
 
 target_include_directories(columnar_lib PUBLIC ${PROJECT_SOURCE_DIR}/include)

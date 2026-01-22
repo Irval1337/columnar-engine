@@ -4,15 +4,22 @@
 #include <core/datatype.h>
 #include <util/macro.h>
 #include <util/parse.h>
+#include <util/bit_vector.h>
 
 #include <string>
 #include <vector>
 
 namespace columnar::core {
+// Serializing schema:
+// [is_null][data]
 template <typename T, DataType type>
 class NumericColumn final : public Column {
 public:
     NumericColumn(bool nullable = false) : nullable_(nullable) {
+    }
+
+    NumericColumn(std::vector<T>&& data, util::BitVector&& is_null, bool nullable)
+        : nullable_(nullable), is_null_(std::move(is_null)), data_(std::move(data)) {
     }
 
     DataType GetDataType() const override {
@@ -26,7 +33,7 @@ public:
     void Reserve(std::size_t n) override {
         data_.reserve(n);
         if (nullable_) {
-            is_null_.reserve(n);
+            is_null_.Reserve(n);
         }
     }
 
@@ -35,13 +42,13 @@ public:
     }
 
     bool IsNull(std::size_t i) const override {
-        return nullable_ && is_null_[i];
+        return nullable_ && is_null_.Get(i);
     }
 
     void AppendFromString(std::string_view s) override {
         data_.emplace_back(util::ParseFromString<T>(s));
         if (nullable_) {
-            is_null_.push_back(false);
+            is_null_.PushBack(false);
         }
     }
 
@@ -50,13 +57,13 @@ public:
             THROW_RUNTIME_ERROR("Cannot set not nullable value to null");
         }
         data_.emplace_back();
-        is_null_.push_back(true);
+        is_null_.PushBack(true);
     }
 
     void AppendDefault() override {
         data_.emplace_back();
         if (nullable_) {
-            is_null_.push_back(true);
+            is_null_.PushBack(true);
         }
     }
 
@@ -66,7 +73,7 @@ public:
 
     void Clear() override {
         data_.clear();
-        is_null_.clear();
+        is_null_.Clear();
     }
 
     const T& Get(std::size_t i) const {
@@ -80,9 +87,17 @@ public:
         return std::to_string(data_[i]);
     }
 
+    const std::vector<T>& GetData() const {
+        return data_;
+    }
+
+    const util::BitVector& GetNullMask() const {
+        return is_null_;
+    }
+
 private:
-    std::vector<T> data_;
     bool nullable_ = false;
-    std::vector<bool> is_null_;
+    util::BitVector is_null_;
+    std::vector<T> data_;
 };
 }  // namespace columnar::core
