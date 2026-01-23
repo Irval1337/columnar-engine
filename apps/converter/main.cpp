@@ -31,14 +31,11 @@ std::ofstream OpenOutput(const std::string& path) {
 }
 
 template <typename Reader, typename Writer>
-std::size_t Convert(Reader& reader, Writer& writer) {
-    std::size_t total = 0;
+void Convert(Reader& reader, Writer& writer) {
     while (auto batch = reader.ReadNext()) {
-        total += batch->RowsCount();
         writer.Write(*batch);
     }
     writer.Flush();
-    return total;
 }
 
 int main(int argc, char** argv) {
@@ -59,8 +56,6 @@ int main(int argc, char** argv) {
     }
 
     try {
-        std::size_t rows = 0;
-
         if (mode == "csv2bruh") {
             if (schema_path.empty()) {
                 throw std::runtime_error("Schema required");
@@ -70,7 +65,7 @@ int main(int argc, char** argv) {
             auto out = OpenOutput(output);
             csv::CSVBatchReader reader(in, schema, {});
             bruh::BruhBatchWriter writer(out, schema);
-            rows = Convert(reader, writer);
+            Convert(reader, writer);
         } else if (mode == "bruh2csv") {
             auto in = OpenInput(input);
             bruh::BruhBatchReader reader(in);
@@ -79,16 +74,17 @@ int main(int argc, char** argv) {
             }
             auto out = OpenOutput(output);
             csv::CSVBatchWriter writer(out, {});
-            rows = Convert(reader, writer);
+            Convert(reader, writer);
         } else {
             throw std::runtime_error("Unknown mode");
         }
-        std::cout << "Done.";
+        std::cout << "Done.\n";
+        return 0;
     } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what();
+        std::cerr << "Error: " << e.what() << "\n";
         return 1;
     } catch (...) {
-        std::cerr << "Unknown error";
+        std::cerr << "Unknown error\n";
         return 1;
     }
 }

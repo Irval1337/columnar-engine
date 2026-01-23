@@ -151,6 +151,7 @@ TEST(BruhBatchReader, AllDataTypes) {
     auto batch = reader.ReadRowGroup(0);
 
     EXPECT_EQ(batch.ColumnAt(0).GetAsString(0), "42");
+    EXPECT_EQ(batch.ColumnAt(1).GetAsString(0), "3.140000");
     EXPECT_EQ(batch.ColumnAt(2).GetAsString(0), "true");
     EXPECT_EQ(batch.ColumnAt(3).GetAsString(0), "test");
 }

@@ -1,12 +1,14 @@
 #include <bruh/bruh_batch_writer.h>
 #include "core/column.h"
 #include "core/columns/bool_column.h"
+#include "util/macro.h"
 #include "util/stream_helper.h"
 
 namespace columnar::bruh {
 void BruhBatchWriter::Write(const core::Batch& batch) {
     RowGroupMetaData group;
     group.rows_count = batch.RowsCount();
+    group.byte_size = 0;
     metadata_.rows_count += batch.RowsCount();
     for (std::size_t col = 0; col < batch.ColumnsCount(); ++col) {
         ColumnChunkMetaData chunk;
@@ -14,6 +16,7 @@ void BruhBatchWriter::Write(const core::Batch& batch) {
         chunk.values_count = batch.RowsCount();
         WriteColumn(batch.ColumnAt(col), schema_.GetFields()[col]);
         chunk.byte_size = static_cast<uint64_t>(os_.tellp()) - chunk.offset;
+        group.byte_size += chunk.byte_size;
         group.columns.emplace_back(std::move(chunk));
     }
     metadata_.row_groups.emplace_back(std::move(group));
@@ -31,6 +34,9 @@ void BruhBatchWriter::WriteColumn(const core::Column& col, const core::Field& fi
     switch (field.type) {
         case core::DataType::Int64: {
             auto int64col = dynamic_cast<const core::Int64Column*>(&col);
+            if (!int64col) {
+                THROW_RUNTIME_ERROR("Corrupted type");
+            }
             if (field.nullable) {
                 util::WriteArray(os_, int64col->GetNullMask().GetData());
             }
@@ -39,6 +45,9 @@ void BruhBatchWriter::WriteColumn(const core::Column& col, const core::Field& fi
         }
         case core::DataType::Double: {
             auto doublecol = dynamic_cast<const core::DoubleColumn*>(&col);
+            if (!doublecol) {
+                THROW_RUNTIME_ERROR("Corrupted type");
+            }
             if (field.nullable) {
                 util::WriteArray(os_, doublecol->GetNullMask().GetData());
             }
@@ -47,6 +56,9 @@ void BruhBatchWriter::WriteColumn(const core::Column& col, const core::Field& fi
         }
         case core::DataType::Bool: {
             auto boolcol = dynamic_cast<const core::BoolColumn*>(&col);
+            if (!boolcol) {
+                THROW_RUNTIME_ERROR("Corrupted type");
+            }
             if (field.nullable) {
                 util::WriteArray(os_, boolcol->GetNullMask().GetData());
             }
@@ -55,6 +67,9 @@ void BruhBatchWriter::WriteColumn(const core::Column& col, const core::Field& fi
         }
         case core::DataType::String: {
             auto stringcol = dynamic_cast<const core::StringColumn*>(&col);
+            if (!stringcol) {
+                THROW_RUNTIME_ERROR("Corrupted type");
+            }
             if (field.nullable) {
                 util::WriteArray(os_, stringcol->GetNullMask().GetData());
             }

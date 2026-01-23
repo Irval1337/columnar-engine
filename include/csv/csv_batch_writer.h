@@ -22,7 +22,7 @@ public:
 private:
     void WriteHeader(const core::Schema& schema);
 
-    void WriteField(const std::string& value);
+    void WriteField(std::string_view value);
 
     std::ostream& os_;
     CSVOptions options_;

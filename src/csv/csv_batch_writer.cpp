@@ -1,6 +1,7 @@
 #include <csv/csv_batch_writer.h>
 #include "core/columns/string_column.h"
 #include "core/datatype.h"
+#include "util/macro.h"
 
 namespace columnar::csv {
 void CSVBatchWriter::Write(const core::Batch& batch) {
@@ -19,14 +20,23 @@ void CSVBatchWriter::Write(const core::Batch& batch) {
                 std::string value;
                 if (column.GetDataType() ==
                     core::DataType::String) {  // Optimization for string continuous columns
-                    value = dynamic_cast<const core::StringColumn*>(&column)->Get(row);
+                    auto stringcol = dynamic_cast<const core::StringColumn*>(&column);
+                    if (!stringcol) {
+                        THROW_RUNTIME_ERROR("Corrupted type");
+                    }
+                    std::string_view value = stringcol->Get(row);
+                    if (value.empty()) {
+                        os_ << options_.quote_char << options_.quote_char;
+                    } else {
+                        WriteField(value);
+                    }
                 } else {
-                    value = column.GetAsString(row);
-                }
-                if (value.empty()) {
-                    os_ << options_.quote_char << options_.quote_char;
-                } else {
-                    WriteField(value);
+                    std::string value = column.GetAsString(row);
+                    if (value.empty()) {
+                        os_ << options_.quote_char << options_.quote_char;
+                    } else {
+                        WriteField(value);
+                    }
                 }
             }
         }
@@ -44,7 +54,7 @@ void CSVBatchWriter::WriteHeader(const core::Schema& schema) {
     os_ << '\n';
 }
 
-void CSVBatchWriter::WriteField(const std::string& value) {
+void CSVBatchWriter::WriteField(std::string_view value) {
     bool need_quotes = value.find(options_.delimiter) != std::string::npos ||
                        value.find(options_.quote_char) != std::string::npos ||
                        value.find('\n') != std::string::npos;

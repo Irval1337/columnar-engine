@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-// File format was inspired with https://parquet.apache.org/docs/file-format/
+// File format was inspired by https://parquet.apache.org/docs/file-format/
 // Binary representation looks like this:
 // Magic BRUHDB bytes (8 bytes)
 // Row groups with data (variable count and size)

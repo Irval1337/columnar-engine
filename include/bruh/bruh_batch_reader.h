@@ -44,9 +44,9 @@ private:
     // Warning: You must call these methods in the same order as below
     void EnsureBruhFormat();
 
-    void ReadSchema(uint32_t rows_count);
+    void ReadSchema(uint32_t cols_count);
 
-    void ReadRowGroupsMetadata(uint32_t rows_count);
+    void ReadRowGroupsMetadata(uint32_t cols_count);
 
     void ReadColumn(std::unique_ptr<core::Column>& col, const core::Field& field, std::size_t n);
 
