@@ -13,6 +13,10 @@ concept BinaryTrivial = std::is_trivially_copyable_v<std::remove_cvref_t<T>> &&
                         std::is_standard_layout_v<std::remove_cvref_t<T>> &&
                         !std::is_same_v<std::remove_cvref_t<T>, bool>;
 
+inline void Skip(std::istream& stream, std::size_t len) {
+    stream.seekg(len, std::ios::cur);
+}
+
 template <BinaryTrivial T>
 inline T Read(std::istream& stream) {
     T value;
@@ -25,10 +29,6 @@ inline std::string ReadString(std::istream& stream, std::size_t len) {
     value.resize(len);
     stream.read(value.data(), len);
     return value;
-}
-
-inline void Skip(std::istream& stream, std::size_t len) {
-    stream.seekg(len, std::ios::cur);
 }
 
 template <BinaryTrivial T>
@@ -57,5 +57,9 @@ inline void WriteString(std::ostream& stream, const std::string& value) {
 template <BinaryTrivial T>
 inline void WriteArray(std::ostream& stream, const std::vector<T>& values) {
     stream.write(reinterpret_cast<const char*>(values.data()), sizeof(T) * values.size());
+}
+
+inline void WriteBoolArray(std::ostream& stream, const std::vector<uint64_t>& words) {
+    WriteArray(stream, words);
 }
 }  // namespace columnar::util

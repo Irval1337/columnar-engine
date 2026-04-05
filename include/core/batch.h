@@ -1,7 +1,7 @@
 #pragma once
 
+#include <core/column_factory.h>
 #include <core/schema.h>
-#include <core/column.h>
 #include <util/macro.h>
 
 namespace columnar::core {

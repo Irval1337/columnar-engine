@@ -1,4 +1,4 @@
-#include <core/column.h>
+#include <core/column_factory.h>
 #include <core/datatype.h>
 #include <util/macro.h>
 

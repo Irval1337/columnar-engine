@@ -41,7 +41,6 @@ public:
 private:
     void ReadMetaData();
 
-    // Warning: You must call these methods in the same order as below
     void EnsureBruhFormat();
 
     void ReadSchema(uint32_t cols_count);

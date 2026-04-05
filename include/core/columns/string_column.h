@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/columns/abstract_column.h>
+#include <core/column.h>
 #include <core/datatype.h>
 #include <util/macro.h>
 #include <util/bit_vector.h>
@@ -10,8 +10,6 @@
 #include <vector>
 
 namespace columnar::core {
-// Serializing schema:
-// [is_null][offsets][lengths][data]
 class StringColumn final : public Column {
 public:
     StringColumn(bool nullable = false) : nullable_(nullable) {
@@ -75,10 +73,6 @@ public:
         if (nullable_) {
             is_null_.PushBack(true);
         }
-    }
-
-    std::unique_ptr<Column> CloneEmpty() const override {
-        return std::make_unique<StringColumn>(nullable_);
     }
 
     void Clear() override {

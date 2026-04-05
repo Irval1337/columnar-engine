@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/columns/abstract_column.h>
+#include <core/column.h>
 #include <core/datatype.h>
 #include <util/macro.h>
 #include <util/parse.h>
@@ -10,8 +10,6 @@
 #include <vector>
 
 namespace columnar::core {
-// Serializing schema:
-// [is_null][data]
 template <typename T, DataType type>
 class NumericColumn final : public Column {
 public:
@@ -65,10 +63,6 @@ public:
         if (nullable_) {
             is_null_.PushBack(true);
         }
-    }
-
-    std::unique_ptr<Column> CloneEmpty() const override {
-        return std::make_unique<NumericColumn<T, type>>(nullable_);
     }
 
     void Clear() override {

@@ -47,7 +47,7 @@ public:
     std::size_t GetIndex(std::string_view name) const {
         auto it = index_.find(std::string(name));
         if (it == index_.end()) {
-            THROW_RUNTIME_ERROR("Unknown field");
+            THROW_RUNTIME_ERROR("Unknown field: " + std::string(name));
         }
         return it->second;
     }

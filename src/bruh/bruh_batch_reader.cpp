@@ -1,8 +1,8 @@
 #include <bruh/bruh_batch_reader.h>
 #include <bruh/format.h>
+#include <core/column_factory.h>
 #include <util/stream_helper.h>
 #include <cstdint>
-#include <core/column.h>
 #include <util/bit_vector.h>
 
 namespace columnar::bruh {

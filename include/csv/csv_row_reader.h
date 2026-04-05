@@ -11,7 +11,7 @@
 namespace columnar::csv {
 class CSVRowReader {
 public:
-    // I hope that creating such a strange struct won't be too bad
+    // was_quoted helps to identify empty unquoted fields and empty strings like ""
     struct Field {
         std::string value;
         bool was_quoted = false;

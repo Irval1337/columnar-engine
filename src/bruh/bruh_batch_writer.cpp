@@ -1,6 +1,5 @@
 #include <bruh/bruh_batch_writer.h>
-#include "core/column.h"
-#include "core/columns/bool_column.h"
+#include "core/column_factory.h"
 #include "util/macro.h"
 #include "util/stream_helper.h"
 
@@ -38,7 +37,7 @@ void BruhBatchWriter::WriteColumn(const core::Column& col, const core::Field& fi
                 THROW_RUNTIME_ERROR("Corrupted type");
             }
             if (field.nullable) {
-                util::WriteArray(os_, int64col->GetNullMask().GetData());
+                util::WriteBoolArray(os_, int64col->GetNullMask().GetData());
             }
             util::WriteArray(os_, int64col->GetData());
             break;
@@ -49,7 +48,7 @@ void BruhBatchWriter::WriteColumn(const core::Column& col, const core::Field& fi
                 THROW_RUNTIME_ERROR("Corrupted type");
             }
             if (field.nullable) {
-                util::WriteArray(os_, doublecol->GetNullMask().GetData());
+                util::WriteBoolArray(os_, doublecol->GetNullMask().GetData());
             }
             util::WriteArray(os_, doublecol->GetData());
             break;
@@ -60,9 +59,9 @@ void BruhBatchWriter::WriteColumn(const core::Column& col, const core::Field& fi
                 THROW_RUNTIME_ERROR("Corrupted type");
             }
             if (field.nullable) {
-                util::WriteArray(os_, boolcol->GetNullMask().GetData());
+                util::WriteBoolArray(os_, boolcol->GetNullMask().GetData());
             }
-            util::WriteArray(os_, boolcol->GetData().GetData());
+            util::WriteBoolArray(os_, boolcol->GetData().GetData());
             break;
         }
         case core::DataType::String: {
@@ -71,7 +70,7 @@ void BruhBatchWriter::WriteColumn(const core::Column& col, const core::Field& fi
                 THROW_RUNTIME_ERROR("Corrupted type");
             }
             if (field.nullable) {
-                util::WriteArray(os_, stringcol->GetNullMask().GetData());
+                util::WriteBoolArray(os_, stringcol->GetNullMask().GetData());
             }
             util::WriteArray(os_, stringcol->GetOffsets());
             util::WriteArray(os_, stringcol->GetLengths());
