@@ -7,7 +7,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(COLUMNAR_BUILD_TESTS "Build tests" ON)
-option(COLUMNAR_BUILD_BENCHMARKS "Build benchmarks" ON)
 
 include(cmake/deps.cmake)
 
@@ -30,8 +29,4 @@ add_subdirectory(apps/converter)
 if(COLUMNAR_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
-endif()
-
-if(COLUMNAR_BUILD_BENCHMARKS)
-  add_subdirectory(benchmarks)
 endif()
