@@ -53,7 +53,6 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DFETCHCONTENT_BASE_DIR="${FETCHCONTENT_BASE_DIR}" \
             -DCOLUMNAR_BUILD_TESTS=ON \
-            -DCOLUMNAR_BUILD_BENCHMARKS=OFF \
             -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
 
@@ -107,7 +106,6 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DFETCHCONTENT_BASE_DIR="${FETCHCONTENT_BASE_DIR}" \
             -DCOLUMNAR_BUILD_TESTS=ON \
-            -DCOLUMNAR_BUILD_BENCHMARKS=OFF \
             -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" \
             -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
 
@@ -136,9 +134,9 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build cmake g++ ccache
+          sudo apt-get install -y ninja-build cmake g++ ccache zstd
 
-      - name: Cache FetchContent (release)
+      - name: Cache FetchContent
         uses: actions/cache@v4
         with:
           path: .fetchcontent/release
@@ -146,7 +144,7 @@ jobs:
           restore-keys: |
             fetchcontent-${{ runner.os }}-release-
 
-      - name: Cache ccache (release)
+      - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: .ccache/release
@@ -154,22 +152,7 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-release-
 
-      - name: Configure (Release)
+      - name: Build and Benchmark
         run: |
-          cmake -S . -B build-release -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=gcc \
-            -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DFETCHCONTENT_BASE_DIR="${FETCHCONTENT_BASE_DIR}" \
-            -DCOLUMNAR_BUILD_TESTS=OFF \
-            -DCOLUMNAR_BUILD_BENCHMARKS=ON
-
-      - name: Build
-        run: cmake --build build-release
-
-      - name: Run all benchmarks
-        run: |
-          chmod +x tools/run_benchmarks.sh
-          tools/run_benchmarks.sh build-release
+          chmod +x script/run_benchmarks.sh
+          ./script/run_benchmarks.sh
