@@ -6,22 +6,27 @@
 #include <util/bit_vector.h>
 
 #include <cstddef>
+#include <cstring>
 #include <string>
 #include <vector>
 
 namespace columnar::core {
 class StringColumn final : public Column {
 public:
-    StringColumn(bool nullable = false) : nullable_(nullable) {
+    StringColumn(bool nullable = false) : offsets_(1, 0), nullable_(nullable) {
     }
 
     StringColumn(std::vector<char>&& data, std::vector<std::size_t>&& offsets,
-                 std::vector<std::size_t>&& lengths, util::BitVector&& is_null, bool nullable)
+                 util::BitVector&& is_null, bool nullable)
         : data_(std::move(data)),
           offsets_(std::move(offsets)),
-          lengths_(std::move(lengths)),
           nullable_(nullable),
           is_null_(std::move(is_null)) {
+        if (offsets_.empty()) {
+            offsets_.push_back(0);
+        } else if (offsets_.front() != 0 || offsets_.back() != data_.size()) {
+            THROW_RUNTIME_ERROR("Corrupted string column");
+        }
     }
 
     DataType GetDataType() const override {
@@ -29,13 +34,12 @@ public:
     }
 
     std::size_t Size() const override {
-        return lengths_.size();
+        return offsets_.size() - 1;
     }
 
     void Reserve(std::size_t n) override {
-        lengths_.reserve(n);
-        offsets_.reserve(n);
-        data_.reserve(n * 6);  // Looks like an average string length :)
+        offsets_.reserve(n + 1);
+        data_.reserve(n * 12);
         if (nullable_) {
             is_null_.Reserve(n);
         }
@@ -49,13 +53,16 @@ public:
         return nullable_ && is_null_.Get(i);
     }
 
-    void AppendFromString(std::string_view s) override {
+    void Append(std::string_view s) {
         AppendString(s);
-        offsets_.push_back(data_.size() - s.size());
-        lengths_.push_back(s.size());
+        offsets_.push_back(data_.size());
         if (nullable_) {
             is_null_.PushBack(false);
         }
+    }
+
+    void AppendFromString(std::string_view s) override {
+        Append(s);
     }
 
     void AppendNull() override {
@@ -63,13 +70,11 @@ public:
             THROW_RUNTIME_ERROR("Cannot set not nullable value to null");
         }
         offsets_.push_back(data_.size());
-        lengths_.push_back(0);
         is_null_.PushBack(true);
     }
 
     void AppendDefault() override {
         offsets_.push_back(data_.size());
-        lengths_.push_back(0);
         if (nullable_) {
             is_null_.PushBack(true);
         }
@@ -78,19 +83,26 @@ public:
     void Clear() override {
         data_.clear();
         offsets_.clear();
-        lengths_.clear();
+        offsets_.push_back(0);
         is_null_.Clear();
     }
 
     std::string_view Get(size_t i) const {
-        return std::string_view(data_.data() + offsets_[i], lengths_[i]);
+        return std::string_view(data_.data() + offsets_[i], offsets_[i + 1] - offsets_[i]);
     }
 
     std::string GetAsString(std::size_t i) const override {
         if (IsNull(i)) {
             return "";
         }
-        return std::string(data_.data() + offsets_[i], lengths_[i]);
+        return std::string(data_.data() + offsets_[i], offsets_[i + 1] - offsets_[i]);
+    }
+
+    void AppendToString(std::size_t i, std::string& out) const override {
+        if (IsNull(i)) {
+            return;
+        }
+        out.append(data_.data() + offsets_[i], offsets_[i + 1] - offsets_[i]);
     }
 
     const std::vector<char>& GetData() const {
@@ -101,22 +113,22 @@ public:
         return offsets_;
     }
 
-    const std::vector<std::size_t>& GetLengths() const {
-        return lengths_;
-    }
-
     const util::BitVector& GetNullMask() const {
         return is_null_;
     }
 
 private:
     void AppendString(std::string_view s) {
-        data_.insert(data_.end(), s.begin(), s.end());
+        if (s.empty()) {
+            return;
+        }
+        std::size_t pos = data_.size();
+        data_.resize(pos + s.size());
+        std::memcpy(data_.data() + pos, s.data(), s.size());
     }
 
     std::vector<char> data_;
     std::vector<std::size_t> offsets_;
-    std::vector<std::size_t> lengths_;
     bool nullable_ = false;
     util::BitVector is_null_;
 };

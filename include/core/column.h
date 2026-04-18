@@ -29,6 +29,8 @@ public:
 
     virtual std::string GetAsString(std::size_t i) const = 0;
 
+    virtual void AppendToString(std::size_t i, std::string& out) const = 0;
+
     virtual void Clear() = 0;
 };
 }  // namespace columnar::core

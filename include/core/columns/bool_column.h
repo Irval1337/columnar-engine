@@ -8,7 +8,6 @@
 
 #include <cstddef>
 #include <string>
-#include <vector>
 
 namespace columnar::core {
 class BoolColumn : public Column {
@@ -43,12 +42,16 @@ public:
         return nullable_ && is_null_.Get(i);
     }
 
-    void AppendFromString(std::string_view s) override {
-        data_.PushBack(util::ParseFromString<bool>(s));
+    void Append(bool value) {
+        data_.PushBack(value);
         if (nullable_) {
             is_null_.PushBack(false);
         }
         ++size_;
+    }
+
+    void AppendFromString(std::string_view s) override {
+        Append(util::ParseFromString<bool>(s));
     }
 
     void AppendNull() override {
@@ -83,6 +86,13 @@ public:
             return "";
         }
         return Get(i) ? "true" : "false";
+    }
+
+    void AppendToString(std::size_t i, std::string& out) const override {
+        if (IsNull(i)) {
+            return;
+        }
+        out += Get(i) ? "true" : "false";
     }
 
     const util::BitVector& GetData() const {

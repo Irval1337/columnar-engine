@@ -6,7 +6,9 @@
 #include <util/parse.h>
 #include <util/bit_vector.h>
 
+#include <charconv>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace columnar::core {
@@ -43,11 +45,15 @@ public:
         return nullable_ && is_null_.Get(i);
     }
 
-    void AppendFromString(std::string_view s) override {
-        data_.emplace_back(util::ParseFromString<T>(s));
+    void Append(T value) {
+        data_.emplace_back(value);
         if (nullable_) {
             is_null_.PushBack(false);
         }
+    }
+
+    void AppendFromString(std::string_view s) override {
+        Append(util::ParseFromString<T>(s));
     }
 
     void AppendNull() override {
@@ -79,6 +85,24 @@ public:
             return "";
         }
         return std::to_string(data_[i]);
+    }
+
+    void AppendToString(std::size_t i, std::string& out) const override {
+        if (IsNull(i)) {
+            return;
+        }
+        char buf[64];
+        std::to_chars_result res;
+        if constexpr (std::is_floating_point_v<T>) {
+            res = std::to_chars(buf, buf + sizeof(buf), data_[i], std::chars_format::fixed, 6);
+        } else {
+            res = std::to_chars(buf, buf + sizeof(buf), data_[i]);
+        }
+        if (res.ec == std::errc{}) {
+            out.append(buf, static_cast<std::size_t>(res.ptr - buf));
+        } else {
+            out += std::to_string(data_[i]);
+        }
     }
 
     const std::vector<T>& GetData() const {
