@@ -37,7 +37,9 @@ core::Batch BruhBatchReader::ReadRowGroup(std::size_t i) {
     core::Batch batch(metadata_.schema, group.rows_count);
     auto& columns = batch.GetColumns();
     for (std::size_t col = 0; col < schema.FieldsCount(); ++col) {
-        is_.seekg(group.columns[col].offset);
+        if (is_.tellg() != group.columns[col].offset) {
+            is_.seekg(group.columns[col].offset);
+        }
         ReadColumn(columns[col], schema.GetFields()[col], group.columns[col].values_count);
     }
     return batch;
