@@ -7,19 +7,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(COLUMNAR_BUILD_TESTS "Build tests" ON)
-option(COLUMNAR_BUILD_BENCHMARKS "Build benchmarks" ON)
 
 include(cmake/deps.cmake)
 
 add_library(columnar_lib
   src/core/column.cpp
+  src/util/buffered_file.cpp
   src/csv/csv_batch_reader.cpp
   src/csv/csv_batch_writer.cpp
   src/csv/csv_row_reader.cpp
   src/csv/schema_manager.cpp
   src/bruh/bruh_batch_reader.cpp
   src/bruh/bruh_batch_writer.cpp
-  src/util/parse.cpp
 )
 
 target_include_directories(columnar_lib PUBLIC ${PROJECT_SOURCE_DIR}/include)
@@ -31,8 +30,4 @@ add_subdirectory(apps/converter)
 if(COLUMNAR_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
-endif()
-
-if(COLUMNAR_BUILD_BENCHMARKS)
-  add_subdirectory(benchmarks)
 endif()

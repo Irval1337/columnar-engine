@@ -1,10 +1,10 @@
 #include <absl/flags/flag.h>
 #include <absl/flags/parse.h>
 #include <absl/flags/usage.h>
-#include <csv/csv.h>
 #include <bruh/bruh.h>
+#include <csv/csv.h>
+#include <util/buffered_file.h>
 
-#include <fstream>
 #include <iostream>
 
 ABSL_FLAG(std::string, mode, "", "Conversion mode: csv2bruh or bruh2csv");
@@ -13,22 +13,6 @@ ABSL_FLAG(std::string, input, "", "Input file path");
 ABSL_FLAG(std::string, output, "", "Output file path");
 
 using namespace columnar;  // NOLINT
-
-std::ifstream OpenInput(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in || !in.good()) {
-        throw std::runtime_error("Cannot open file " + path);
-    }
-    return in;
-}
-
-std::ofstream OpenOutput(const std::string& path) {
-    std::ofstream out(path, std::ios::binary);
-    if (!out || !out.good()) {
-        throw std::runtime_error("Cannot open file " + path);
-    }
-    return out;
-}
 
 template <typename Reader, typename Writer>
 void Convert(Reader& reader, Writer& writer) {
@@ -61,18 +45,18 @@ int main(int argc, char** argv) {
                 throw std::runtime_error("Schema required");
             }
             auto schema = csv::SchemaManager::ReadFromFile(schema_path);
-            auto in = OpenInput(input);
-            auto out = OpenOutput(output);
+            util::BufferedInputFile in(input);
+            util::BufferedOutputFile out(output);
             csv::CSVBatchReader reader(in, schema, {});
             bruh::BruhBatchWriter writer(out, schema);
             Convert(reader, writer);
         } else if (mode == "bruh2csv") {
-            auto in = OpenInput(input);
+            util::BufferedInputFile in(input);
             bruh::BruhBatchReader reader(in);
             if (!schema_path.empty()) {
                 csv::SchemaManager::WriteToFile(schema_path, reader.GetSchema());
             }
-            auto out = OpenOutput(output);
+            util::BufferedOutputFile out(output);
             csv::CSVBatchWriter writer(out, {});
             Convert(reader, writer);
         } else {

@@ -23,6 +23,17 @@ TEST(BruhBatchWriter, WriteBasic) {
     EXPECT_GT(ss.str().size(), 0);
 }
 
+TEST(BruhBatchWriter, RejectsMismatchedSchema) {
+    core::Schema writer_schema({core::Field("x", core::DataType::String)});
+    core::Schema batch_schema({core::Field("x", core::DataType::Int64)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    bruh::BruhBatchWriter writer(ss, writer_schema);
+    core::Batch batch(batch_schema);
+    batch.ColumnAt(0).AppendFromString("42");
+
+    EXPECT_THROW(writer.Write(batch), std::runtime_error);
+}
+
 TEST(BruhBatchReader, ReadBasic) {
     core::Schema schema(
         {core::Field("id", core::DataType::Int64), core::Field("name", core::DataType::String)});

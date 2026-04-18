@@ -41,6 +41,11 @@
 *.dwo
 
 build/
+build-*/
 .vscode/
 .cache/
 .clangd
+.deps/
+.fetchcontent/
+.ccache/
+clickbench/

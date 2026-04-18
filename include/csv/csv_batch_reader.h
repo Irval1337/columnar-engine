@@ -6,7 +6,6 @@
 #include <csv/csv_row_reader.h>
 #include <util/macro.h>
 
-#include <fstream>
 #include <optional>
 
 namespace columnar::csv {

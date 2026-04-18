@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/columns/abstract_column.h>
+#include <core/column.h>
 #include <core/datatype.h>
 #include <util/macro.h>
 #include <util/parse.h>
@@ -8,11 +8,8 @@
 
 #include <cstddef>
 #include <string>
-#include <vector>
 
 namespace columnar::core {
-// Serializing schema:
-// [is_null][data]
 class BoolColumn : public Column {
 public:
     BoolColumn(bool nullable = false) : nullable_(nullable) {
@@ -45,12 +42,16 @@ public:
         return nullable_ && is_null_.Get(i);
     }
 
-    void AppendFromString(std::string_view s) override {
-        data_.PushBack(util::ParseFromString<bool>(s));
+    void Append(bool value) {
+        data_.PushBack(value);
         if (nullable_) {
             is_null_.PushBack(false);
         }
         ++size_;
+    }
+
+    void AppendFromString(std::string_view s) override {
+        Append(util::ParseFromString<bool>(s));
     }
 
     void AppendNull() override {
@@ -70,10 +71,6 @@ public:
         ++size_;
     }
 
-    std::unique_ptr<Column> CloneEmpty() const override {
-        return std::make_unique<BoolColumn>(nullable_);
-    }
-
     void Clear() override {
         data_.Clear();
         is_null_.Clear();
@@ -89,6 +86,13 @@ public:
             return "";
         }
         return Get(i) ? "true" : "false";
+    }
+
+    void AppendToString(std::size_t i, std::string& out) const override {
+        if (IsNull(i)) {
+            return;
+        }
+        out += Get(i) ? "true" : "false";
     }
 
     const util::BitVector& GetData() const {
