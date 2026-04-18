@@ -93,6 +93,24 @@ TEST(CSVRowReader, CustomDelimiter) {
     EXPECT_EQ((*row)[1], "b");
 }
 
+TEST(CSVRowReader, ReadRowView) {
+    std::istringstream in("\"\",b\nc,d");
+    csv::CSVRowReader reader(in);
+
+    auto row = reader.ReadRowView();
+    ASSERT_TRUE(row);
+    EXPECT_EQ(row->size(), 2);
+    EXPECT_TRUE((*row)[0].was_quoted);
+    EXPECT_EQ((*row)[0], "");
+    EXPECT_EQ((*row)[1], "b");
+
+    row = reader.ReadRowView();
+    ASSERT_TRUE(row);
+    EXPECT_FALSE((*row)[0].was_quoted);
+    EXPECT_EQ((*row)[0], "c");
+    EXPECT_EQ((*row)[1], "d");
+}
+
 TEST(SchemaReader, ReadWrite) {
     std::istringstream in("id,int64\nname,string,nullable\nmoney,double");
     auto schema = csv::SchemaManager::ReadFromStream(in);
@@ -186,6 +204,19 @@ TEST(CSVBatchWriter, QuotesAndCommas) {
     EXPECT_EQ(out.str(), "\"king,,, arthur\"\n\"came \"\"a lot\"\"\"\n");
 }
 
+TEST(CSVBatchWriter, WriteDoubleFormatting) {
+    core::Schema schema({core::Field("x", core::DataType::Double)});
+    core::Batch batch(schema);
+    batch.ColumnAt(0).AppendFromString("3.14");
+
+    std::ostringstream out;
+    csv::CSVBatchWriter writer(out, {});
+    writer.Write(batch);
+    writer.Flush();
+
+    EXPECT_EQ(out.str(), "3.140000\n");
+}
+
 TEST(CSVFullInterface, DataIsNotChanged) {
     core::Schema schema(
         {core::Field("id", core::DataType::Int64), core::Field("name", core::DataType::String)});
@@ -256,6 +287,52 @@ TEST(CSVBatchWriter, WriteHeader) {
     writer.Write(b2);
 
     EXPECT_EQ(NormalizeCSV(out.str()), NormalizeCSV("a,b\n1,x\n2,y\n"));
+}
+
+TEST(CSVBatchWriter, WriteMultipleBatches) {
+    core::Schema schema(
+        {core::Field("a", core::DataType::Int64), core::Field("b", core::DataType::String)});
+    std::ostringstream out;
+    csv::CSVBatchWriter writer(out, {});
+
+    core::Batch first(schema);
+    first.ColumnAt(0).AppendFromString("1");
+    first.ColumnAt(1).AppendFromString("x");
+    writer.Write(first);
+
+    core::Batch second(schema);
+    second.ColumnAt(0).AppendFromString("2");
+    second.ColumnAt(1).AppendFromString("y");
+    second.ColumnAt(0).AppendFromString("3");
+    second.ColumnAt(1).AppendFromString("z");
+    writer.Write(second);
+    writer.Flush();
+
+    EXPECT_EQ(NormalizeCSV(out.str()), NormalizeCSV("1,x\n2,y\n3,z\n"));
+}
+
+TEST(CSVBatchWriter, WriteMultipleBatchesAfterPreviousBatchDestroyed) {
+    core::Schema schema(
+        {core::Field("a", core::DataType::Int64), core::Field("b", core::DataType::String)});
+    std::ostringstream out;
+    csv::CSVBatchWriter writer(out, {});
+
+    {
+        core::Batch first(schema);
+        first.ColumnAt(0).AppendFromString("1");
+        first.ColumnAt(1).AppendFromString("x");
+        writer.Write(first);
+    }
+
+    core::Batch second(schema);
+    second.ColumnAt(0).AppendFromString("2");
+    second.ColumnAt(1).AppendFromString("y");
+    second.ColumnAt(0).AppendFromString("3");
+    second.ColumnAt(1).AppendFromString("z");
+    writer.Write(second);
+    writer.Flush();
+
+    EXPECT_EQ(NormalizeCSV(out.str()), NormalizeCSV("1,x\n2,y\n3,z\n"));
 }
 
 TEST(CSVFullInterface, NullAndEmptyString) {

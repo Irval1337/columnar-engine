@@ -12,6 +12,7 @@ include(cmake/deps.cmake)
 
 add_library(columnar_lib
   src/core/column.cpp
+  src/util/buffered_file.cpp
   src/csv/csv_batch_reader.cpp
   src/csv/csv_batch_writer.cpp
   src/csv/csv_row_reader.cpp

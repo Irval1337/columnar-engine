@@ -45,6 +45,7 @@ build-*/
 .vscode/
 .cache/
 .clangd
+.deps/
 .fetchcontent/
 .ccache/
 clickbench/

@@ -35,8 +35,16 @@ run_mode() {
 
   local times=()
   local warmup="$OUT_DIR/warmup.${output_ext}"
+  local title="$mode"
 
-  echo "[bench] Warmup ${mode}"
+  case "$mode" in
+    csv2bruh) title="csv2bruh (CSV -> BRUH)" ;;
+    bruh2csv) title="bruh2csv (BRUH -> CSV)" ;;
+  esac
+
+  echo
+  echo "== ${title} =="
+  echo "[bench] warmup"
   "$CONVERTER" "$@" --mode="$mode" --input="$input" --output="$warmup" >/dev/null
   rm -f "$warmup"
 
@@ -50,7 +58,7 @@ run_mode() {
     rm -f "$t"
     speed="$(awk -v b="$input_bytes" -v s="$seconds" 'BEGIN { printf "%.2f", b / 1024 / 1024 / s }')"
     times+=("$seconds")
-    echo "[bench] ${mode} run=${run} seconds=${seconds} mib_per_s=${speed} output_bytes=$(stat -c%s "$out_file")"
+    echo "[bench] run ${run}: seconds=${seconds} mib_per_s=${speed} output_bytes=$(stat -c%s "$out_file")"
   done
 
   python3 - "$mode" "$input_bytes" "${times[@]}" <<'PY'
@@ -60,12 +68,14 @@ mode = sys.argv[1]
 input_bytes = int(sys.argv[2])
 times = [float(x) for x in sys.argv[3:]]
 speeds = [input_bytes / 1024 / 1024 / t for t in times]
-print(f"\n### {mode}")
-print(f"- runs: {len(times)}")
-print(f"- median time: {statistics.median(times):.3f} s")
-print(f"- best time: {min(times):.3f} s")
-print(f"- median throughput: {statistics.median(speeds):.2f} MiB/s")
-print(f"- best throughput: {max(speeds):.2f} MiB/s")
+print(
+    "[bench] summary: "
+    f"runs={len(times)} "
+    f"median_seconds={statistics.median(times):.3f} "
+    f"best_seconds={min(times):.3f} "
+    f"median_mib_per_s={statistics.median(speeds):.2f} "
+    f"best_mib_per_s={max(speeds):.2f}"
+)
 PY
 }
 
@@ -104,7 +114,7 @@ CSV_BYTES="$(stat -c%s "$STAGED_CSV")"
 echo "[bench] runs=${RUNS}"
 echo "[bench] drop_caches=${DROP_CACHES}"
 echo "[bench] staged_input_dir=$(dirname "$STAGED_CSV")"
-echo "## Reduced ClickBench"
+echo "== Reduced ClickBench =="
 
 run_mode csv2bruh "$STAGED_CSV" "$CSV_BYTES" bruh --schema="$STAGED_SCHEMA"
 

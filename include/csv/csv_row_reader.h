@@ -3,20 +3,22 @@
 #include <csv/csv_options.h>
 #include <util/macro.h>
 
-#include <fstream>
+#include <istream>
 #include <optional>
-#include <vector>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace columnar::csv {
 class CSVRowReader {
 public:
     // was_quoted helps to identify empty unquoted fields and empty strings like ""
-    struct Field {
-        std::string value;
+    template <typename T>
+    struct BasicField {
+        T value;
         bool was_quoted = false;
 
-        operator const std::string&() const {
+        operator const T&() const {
             return value;
         }
         operator std::string_view() const {
@@ -25,31 +27,24 @@ public:
         bool empty() const {  // NOLINT
             return value.empty();
         }
-        std::size_t size() const {  // NOLINT
-            return value.size();
-        }
-        const char* c_str() const {  // NOLINT
-            return value.c_str();
-        }
-        bool operator==(const std::string& other) const {
-            return value == other;
-        }
         bool operator==(std::string_view other) const {
-            return value == other;
-        }
-        bool operator==(const char* other) const {
-            return value == other;
+            return std::string_view(value) == other;
         }
     };
-    using Row = std::vector<Field>;
 
-public:
+    using FieldView = BasicField<std::string_view>;
+    using Field = BasicField<std::string>;
+    using Row = std::vector<Field>;
+    using RowView = std::vector<FieldView>;
+
     CSVRowReader(std::istream& is, CSVOptions options = {}) : is_(is), options_(options) {
         if (options_.has_header) {
-            ReadRow();
+            ReadRowView();
         }
     }
 
+    // Returned view stays valid until next Read call
+    const RowView* ReadRowView();
     std::optional<Row> ReadRow();
 
     bool IsFinished() const {
@@ -57,7 +52,13 @@ public:
     }
 
 private:
+    bool ReadRawRow();
+
     std::istream& is_;
     CSVOptions options_;
+    std::string line_buf_;
+    std::string raw_buf_;
+    std::string unescape_buf_;
+    RowView parsed_fields_;
 };
 }  // namespace columnar::csv

@@ -1,7 +1,5 @@
 #include <csv/csv_batch_writer.h>
-#include "core/columns/string_column.h"
-#include "core/datatype.h"
-#include "util/macro.h"
+#include <core/columns/string_column.h>
 
 namespace columnar::csv {
 void CSVBatchWriter::Write(const core::Batch& batch) {
@@ -10,66 +8,82 @@ void CSVBatchWriter::Write(const core::Batch& batch) {
         header_written_ = true;
     }
 
+    const auto& cols = batch.GetColumns();
+    col_views_.clear();
+    col_views_.reserve(cols.size());
+    for (const auto& col : cols) {
+        col_views_.push_back(
+            {col.get(), col->GetDataType() == core::DataType::String, col->IsNullable()});
+    }
+
     for (std::size_t row = 0; row < batch.RowsCount(); ++row) {
-        for (std::size_t col = 0; col < batch.ColumnsCount(); ++col) {
+        line_buf_.clear();
+        for (std::size_t col = 0; col < col_views_.size(); ++col) {
             if (col > 0) {
-                os_ << options_.delimiter;
+                line_buf_ += options_.delimiter;
             }
-            auto& column = batch.ColumnAt(col);
-            if (!column.IsNull(row)) {
-                std::string value;
-                if (column.GetDataType() ==
-                    core::DataType::String) {  // Optimization for string continuous columns
-                    auto stringcol = dynamic_cast<const core::StringColumn*>(&column);
-                    if (!stringcol) {
-                        THROW_RUNTIME_ERROR("Corrupted type");
-                    }
-                    std::string_view value = stringcol->Get(row);
-                    if (value.empty()) {
-                        os_ << options_.quote_char << options_.quote_char;
-                    } else {
-                        WriteField(value);
-                    }
+            auto& view = col_views_[col];
+            if (view.nullable && view.column->IsNull(row)) {
+                continue;
+            }
+            if (view.is_string) {
+                auto value = static_cast<const core::StringColumn*>(view.column)->Get(row);
+                if (value.empty()) {
+                    line_buf_ += options_.quote_char;
+                    line_buf_ += options_.quote_char;
                 } else {
-                    std::string value = column.GetAsString(row);
-                    if (value.empty()) {
-                        os_ << options_.quote_char << options_.quote_char;
-                    } else {
-                        WriteField(value);
-                    }
+                    AppendField(value);
                 }
+            } else {
+                view.column->AppendToString(row, line_buf_);
             }
         }
-        os_ << '\n';
+        FlushLine();
     }
 }
 
 void CSVBatchWriter::WriteHeader(const core::Schema& schema) {
-    for (std::size_t i = 0; i < schema.FieldsCount(); ++i) {
+    line_buf_.clear();
+    const auto& fields = schema.GetFields();
+    for (std::size_t i = 0; i < fields.size(); ++i) {
         if (i > 0) {
-            os_ << options_.delimiter;
+            line_buf_ += options_.delimiter;
         }
-        WriteField(schema.GetFields()[i].name);
+        AppendField(fields[i].name);
     }
-    os_ << '\n';
+    FlushLine();
 }
 
-void CSVBatchWriter::WriteField(std::string_view value) {
-    bool need_quotes = value.find(options_.delimiter) != std::string::npos ||
-                       value.find(options_.quote_char) != std::string::npos ||
-                       value.find('\n') != std::string::npos;
-
-    if (need_quotes) {
-        os_ << options_.quote_char;
-        for (char c : value) {
-            if (c == options_.quote_char) {
-                os_ << options_.quote_char;
-            }
-            os_ << c;
+void CSVBatchWriter::AppendField(std::string_view value) {
+    bool need_quotes = false;
+    std::size_t quotes = 0;
+    for (char c : value) {
+        if (c == options_.quote_char) {
+            ++quotes;
+            need_quotes = true;
+        } else if (c == options_.delimiter || c == '\n' || c == '\r') {
+            need_quotes = true;
         }
-        os_ << options_.quote_char;
-    } else {
-        os_ << value;
     }
+
+    if (!need_quotes) {
+        line_buf_.append(value);
+        return;
+    }
+
+    line_buf_.reserve(line_buf_.size() + value.size() + quotes + 2);
+    line_buf_ += options_.quote_char;
+    for (char c : value) {
+        if (c == options_.quote_char) {
+            line_buf_ += options_.quote_char;
+        }
+        line_buf_ += c;
+    }
+    line_buf_ += options_.quote_char;
+}
+
+void CSVBatchWriter::FlushLine() {
+    line_buf_ += '\n';
+    os_.write(line_buf_.data(), line_buf_.size());
 }
 }  // namespace columnar::csv

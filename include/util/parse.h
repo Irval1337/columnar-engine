@@ -13,6 +13,18 @@
 #include <cstdlib>
 
 namespace columnar::util {
+inline bool EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) {
+    if (lhs.size() != rhs.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < lhs.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(lhs[i])) !=
+            std::tolower(static_cast<unsigned char>(rhs[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
 
 template <typename T>
 T ParseFromString(std::string_view s) {
@@ -26,15 +38,10 @@ T ParseFromString(std::string_view s) {
             return false;
         }
 
-        std::string normalized(s);
-        for (char& c : normalized) {
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
-
-        if (normalized == "true") {
+        if (EqualsIgnoreCase(s, "true")) {
             return true;
         }
-        if (normalized == "false") {
+        if (EqualsIgnoreCase(s, "false")) {
             return false;
         }
         THROW_RUNTIME_ERROR("Invalid bool value: " + std::string(s));
