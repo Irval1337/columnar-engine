@@ -17,7 +17,7 @@ inline bool EqualsIgnoreCase(std::string_view lhs, std::string_view rhs) {
     if (lhs.size() != rhs.size()) {
         return false;
     }
-    for (std::size_t i = 0; i < lhs.size(); ++i) {
+    for (size_t i = 0; i < lhs.size(); ++i) {
         if (std::tolower(static_cast<unsigned char>(lhs[i])) !=
             std::tolower(static_cast<unsigned char>(rhs[i]))) {
             return false;

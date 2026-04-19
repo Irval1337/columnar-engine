@@ -16,7 +16,7 @@ public:
         }
     }
 
-    Batch(Schema schema, std::size_t reserve_rows) : Batch(std::move(schema)) {
+    Batch(Schema schema, size_t reserve_rows) : Batch(std::move(schema)) {
         Reserve(reserve_rows);
     }
 
@@ -24,28 +24,28 @@ public:
         return schema_;
     }
 
-    std::size_t ColumnsCount() const {
+    size_t ColumnsCount() const {
         return columns_.size();
     }
 
-    std::size_t RowsCount() const {
+    size_t RowsCount() const {
         if (columns_.empty()) {
             return 0;
         }
         return columns_[0]->Size();
     }
 
-    void Reserve(std::size_t n) {
+    void Reserve(size_t n) {
         for (auto& c : columns_) {
             c->Reserve(n);
         }
     }
 
-    const Column& ColumnAt(std::size_t i) const {
+    const Column& ColumnAt(size_t i) const {
         return *columns_.at(i);
     }
 
-    Column& ColumnAt(std::size_t i) {
+    Column& ColumnAt(size_t i) {
         return *columns_.at(i);
     }
 

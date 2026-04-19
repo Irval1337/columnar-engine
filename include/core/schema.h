@@ -23,7 +23,7 @@ public:
         return fields_;
     }
 
-    std::size_t FieldsCount() const {
+    size_t FieldsCount() const {
         return fields_.size();
     }
 
@@ -44,7 +44,7 @@ public:
         return FindField(name) != nullptr;
     }
 
-    std::size_t GetIndex(std::string_view name) const {
+    size_t GetIndex(std::string_view name) const {
         auto it = index_.find(std::string(name));
         if (it == index_.end()) {
             THROW_RUNTIME_ERROR("Unknown field: " + std::string(name));
@@ -54,6 +54,6 @@ public:
 
 private:
     std::vector<Field> fields_;
-    std::unordered_map<std::string, std::size_t> index_;
+    std::unordered_map<std::string, size_t> index_;
 };
 }  // namespace columnar::core

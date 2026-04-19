@@ -8,7 +8,7 @@
 
 namespace columnar::bruh {
 namespace {
-void WriteOffsets(std::ostream& os, const std::vector<std::size_t>& offsets) {
+void WriteOffsets(std::ostream& os, const std::vector<size_t>& offsets) {
     std::vector<uint32_t> offsets32;
     offsets32.reserve(offsets.size());
     for (auto value : offsets) {
@@ -24,12 +24,21 @@ void ValidateSchema(const core::Schema& writer_schema, const core::Schema& batch
 
     auto& expected = writer_schema.GetFields();
     auto& curr = batch_schema.GetFields();
-    for (std::size_t i = 0; i < expected.size(); ++i) {
+    for (size_t i = 0; i < expected.size(); ++i) {
         if (expected[i].name != curr[i].name || expected[i].type != curr[i].type ||
             expected[i].nullable != curr[i].nullable) {
             THROW_RUNTIME_ERROR("Batch schema does not match writer schema");
         }
     }
+}
+
+template <typename ColumnT>
+void WriteNumericColumn(std::ostream& os, const core::Column& col, bool nullable) {
+    auto& numeric = static_cast<const ColumnT&>(col);
+    if (nullable) {
+        util::WriteBoolArray(os, numeric.GetNullMask().GetData());
+    }
+    util::WriteArray(os, numeric.GetData());
 }
 }  // namespace
 
@@ -40,7 +49,7 @@ void BruhBatchWriter::Write(const core::Batch& batch) {
     group.rows_count = batch.RowsCount();
     group.byte_size = 0;
     metadata_.rows_count += batch.RowsCount();
-    for (std::size_t col = 0; col < batch.ColumnsCount(); ++col) {
+    for (size_t col = 0; col < batch.ColumnsCount(); ++col) {
         ColumnChunkMetaData chunk;
         chunk.offset = os_.tellp();
         chunk.values_count = batch.RowsCount();
@@ -61,33 +70,29 @@ void BruhBatchWriter::Flush() {
 }
 
 void BruhBatchWriter::WriteColumn(const core::Column& col, const core::Field& field) {
-    switch (field.type) {
-        case core::DataType::Int64: {
-            const auto& int64col = static_cast<const core::Int64Column&>(col);
-            if (field.nullable) {
-                util::WriteBoolArray(os_, int64col.GetNullMask().GetData());
-            }
-            util::WriteArray(os_, int64col.GetData());
-            break;
-        }
-        case core::DataType::Double: {
-            const auto& doublecol = static_cast<const core::DoubleColumn&>(col);
-            if (field.nullable) {
-                util::WriteBoolArray(os_, doublecol.GetNullMask().GetData());
-            }
-            util::WriteArray(os_, doublecol.GetData());
-            break;
-        }
-        case core::DataType::Bool: {
-            const auto& boolcol = static_cast<const core::BoolColumn&>(col);
+    switch (core::DataTypeToPhysical(field.type)) {
+        case core::PhysicalType::Int16:
+            WriteNumericColumn<core::Int16Column>(os_, col, field.nullable);
+            return;
+        case core::PhysicalType::Int32:
+            WriteNumericColumn<core::Int32Column>(os_, col, field.nullable);
+            return;
+        case core::PhysicalType::Int64:
+            WriteNumericColumn<core::Int64Column>(os_, col, field.nullable);
+            return;
+        case core::PhysicalType::Double:
+            WriteNumericColumn<core::DoubleColumn>(os_, col, field.nullable);
+            return;
+        case core::PhysicalType::Bool: {
+            auto& boolcol = static_cast<const core::BoolColumn&>(col);
             if (field.nullable) {
                 util::WriteBoolArray(os_, boolcol.GetNullMask().GetData());
             }
             util::WriteBoolArray(os_, boolcol.GetData().GetData());
-            break;
+            return;
         }
-        case core::DataType::String: {
-            const auto& stringcol = static_cast<const core::StringColumn&>(col);
+        case core::PhysicalType::String: {
+            auto& stringcol = static_cast<const core::StringColumn&>(col);
             if (field.nullable) {
                 util::WriteBoolArray(os_, stringcol.GetNullMask().GetData());
             }
@@ -100,11 +105,19 @@ void BruhBatchWriter::WriteColumn(const core::Column& col, const core::Field& fi
                 util::WriteArray(os_, stringcol.GetOffsets());
             }
             util::WriteArray(os_, data);
-            break;
+            return;
         }
-        default:
-            THROW_RUNTIME_ERROR("Unsupported type");
+        case core::PhysicalType::Char: {
+            auto& charcol = static_cast<const core::CharColumn&>(col);
+            if (field.nullable) {
+                util::WriteBoolArray(os_, charcol.GetNullMask().GetData());
+            }
+            util::WriteArray(os_, charcol.GetData());
+            return;
+        }
     }
+
+    THROW_RUNTIME_ERROR("Unsupported type");
 }
 
 void BruhBatchWriter::WriteFooter() {

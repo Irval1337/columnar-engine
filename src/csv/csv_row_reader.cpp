@@ -3,7 +3,7 @@
 namespace columnar::csv {
 namespace {
 bool ToggleInQuotes(std::string_view line, bool in_quotes, char quote) {
-    std::size_t pos = 0;
+    size_t pos = 0;
     while (pos < line.size()) {
         auto found = line.find(quote, pos);
         if (found == std::string_view::npos) {
@@ -20,7 +20,7 @@ bool ToggleInQuotes(std::string_view line, bool in_quotes, char quote) {
 }
 
 void ParseUnquotedRow(std::string_view raw_row, char delim, CSVRowReader::RowView& out) {
-    std::size_t pos = 0;
+    size_t pos = 0;
     while (true) {
         auto next = raw_row.find(delim, pos);
         if (next == std::string_view::npos) {
@@ -36,7 +36,7 @@ void ParseUnquotedRow(std::string_view raw_row, char delim, CSVRowReader::RowVie
     }
 }
 
-std::string_view ParseQuotedField(std::string_view raw_row, std::size_t& pos, char quote,
+std::string_view ParseQuotedField(std::string_view raw_row, size_t& pos, char quote,
                                   std::string& scratch) {
     ++pos;
     auto closing = raw_row.find(quote, pos);
@@ -49,7 +49,7 @@ std::string_view ParseQuotedField(std::string_view raw_row, std::size_t& pos, ch
         return field;
     }
 
-    std::size_t start = scratch.size();
+    size_t start = scratch.size();
     while (pos < raw_row.size()) {
         auto next_quote = raw_row.find(quote, pos);
         if (next_quote == std::string_view::npos) {
@@ -67,7 +67,7 @@ std::string_view ParseQuotedField(std::string_view raw_row, std::size_t& pos, ch
     return std::string_view(scratch.data() + start, scratch.size() - start);
 }
 
-std::string_view ParseUnquotedField(std::string_view raw_row, std::size_t& pos, char delim) {
+std::string_view ParseUnquotedField(std::string_view raw_row, size_t& pos, char delim) {
     auto next = raw_row.find(delim, pos);
     if (next == std::string_view::npos) {
         auto field = raw_row.substr(pos);
@@ -82,7 +82,7 @@ std::string_view ParseUnquotedField(std::string_view raw_row, std::size_t& pos, 
 void ParseQuotedRow(std::string_view raw_row, const CSVOptions& options, std::string& scratch,
                     CSVRowReader::RowView& out) {
     scratch.reserve(raw_row.size());
-    std::size_t pos = 0;
+    size_t pos = 0;
     while (pos < raw_row.size()) {
         bool was_quoted = raw_row[pos] == options.quote_char;
         auto field = was_quoted ? ParseQuotedField(raw_row, pos, options.quote_char, scratch)

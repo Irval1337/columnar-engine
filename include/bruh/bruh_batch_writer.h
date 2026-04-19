@@ -4,10 +4,7 @@
 #include <bruh/format.h>
 #include <util/macro.h>
 
-#include <fstream>
-#include <memory>
 #include <ostream>
-#include <string>
 
 namespace columnar::bruh {
 class BruhBatchWriter final : public core::BatchWriter {

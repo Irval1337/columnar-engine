@@ -3,7 +3,7 @@
 #include <stdexcept>
 
 namespace columnar::util {
-BufferedInputFile::BufferedInputFile(const std::string& path, std::size_t buf_size)
+BufferedInputFile::BufferedInputFile(const std::string& path, size_t buf_size)
     : std::istream(&filebuf_), buf_(buf_size) {
     filebuf_.pubsetbuf(buf_.data(), buf_.size());
     if (!filebuf_.open(path, std::ios::in | std::ios::binary)) {
@@ -11,7 +11,7 @@ BufferedInputFile::BufferedInputFile(const std::string& path, std::size_t buf_si
     }
 }
 
-BufferedOutputFile::BufferedOutputFile(const std::string& path, std::size_t buf_size)
+BufferedOutputFile::BufferedOutputFile(const std::string& path, size_t buf_size)
     : std::ostream(&filebuf_), buf_(buf_size) {
     filebuf_.pubsetbuf(buf_.data(), buf_.size());
     if (!filebuf_.open(path, std::ios::out | std::ios::binary | std::ios::trunc)) {

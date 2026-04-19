@@ -16,7 +16,7 @@
 // My amazing DB uses ONLY little-endian bytes ordering
 namespace columnar::bruh {
 constexpr uint8_t kMagicBytes[8] = {'B', 'R', 'U', 'H', 'D', 'B', 0x67, 0x67};
-constexpr int kCurrentVersion = 2;
+constexpr int kCurrentVersion = 3;
 
 struct ColumnChunkMetaData {
     uint64_t offset;

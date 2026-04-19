@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/batch_writer.h>
+#include <core/datatype.h>
 #include <csv/csv_options.h>
 #include <util/macro.h>
 
@@ -23,7 +24,7 @@ private:
     // Helps to skip virtual calls and other checks during the cell loop
     struct ColumnView {
         const core::Column* column;
-        bool is_string;
+        core::DataType type;
         bool nullable;
     };
 

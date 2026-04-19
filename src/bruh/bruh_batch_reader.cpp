@@ -1,6 +1,8 @@
 #include <bruh/bruh_batch_reader.h>
 #include <bruh/format.h>
 #include <core/column_factory.h>
+#include <core/columns/date_column.h>
+#include <core/columns/timestamp_column.h>
 #include <util/bit_vector.h>
 #include <util/stream_helper.h>
 
@@ -8,26 +10,33 @@
 
 namespace columnar::bruh {
 namespace {
-std::vector<std::size_t> ReadOffsets(std::istream& is, std::size_t n) {
+std::vector<size_t> ReadOffsets(std::istream& is, size_t n) {
     auto raw = util::ReadArray<uint32_t>(is, n + 1);
-    std::vector<std::size_t> offsets;
+    std::vector<size_t> offsets;
     offsets.reserve(raw.size());
     for (auto value : raw) {
-        offsets.push_back(static_cast<std::size_t>(value));
+        offsets.push_back(static_cast<size_t>(value));
     }
     return offsets;
 }
 
+template <typename Column, typename T>
+std::unique_ptr<core::Column> ReadNumericColumn(std::istream& is, util::BitVector&& is_null,
+                                                bool nullable, size_t n) {
+    auto data = util::ReadArray<T>(is, n);
+    return std::make_unique<Column>(std::move(data), std::move(is_null), nullable);
+}
+
 std::unique_ptr<core::Column> ReadStringColumn(std::istream& is, util::BitVector&& is_null,
-                                               bool nullable, std::size_t n, uint8_t offset_width) {
-    auto offsets = offset_width == 4 ? ReadOffsets(is, n) : util::ReadArray<std::size_t>(is, n + 1);
+                                               bool nullable, size_t n, uint8_t offset_width) {
+    auto offsets = offset_width == 4 ? ReadOffsets(is, n) : util::ReadArray<size_t>(is, n + 1);
     auto data = util::ReadArray<char>(is, offsets.back());
     return std::make_unique<core::StringColumn>(std::move(data), std::move(offsets),
                                                 std::move(is_null), nullable);
 }
 }  // namespace
 
-core::Batch BruhBatchReader::ReadRowGroup(std::size_t i) {
+core::Batch BruhBatchReader::ReadRowGroup(size_t i) {
     if (i >= metadata_.row_groups.size()) {
         THROW_RUNTIME_ERROR("Row group index out of range");
     }
@@ -36,7 +45,7 @@ core::Batch BruhBatchReader::ReadRowGroup(std::size_t i) {
     auto& schema = metadata_.schema;
     core::Batch batch(metadata_.schema, group.rows_count);
     auto& columns = batch.GetColumns();
-    for (std::size_t col = 0; col < schema.FieldsCount(); ++col) {
+    for (size_t col = 0; col < schema.FieldsCount(); ++col) {
         if (is_.tellg() != group.columns[col].offset) {
             is_.seekg(group.columns[col].offset);
         }
@@ -71,11 +80,9 @@ void BruhBatchReader::ReadSchema(uint32_t cols_count) {
     std::vector<core::Field> fields;
     fields.reserve(cols_count);
     for (uint32_t i = 0; i < cols_count; ++i) {
-        // (@Irval1337) TODO: maybe store field names concisely?
         auto name_len = util::Read<uint32_t>(is_);
         auto name = util::ReadString(is_, name_len);
-
-        auto type = util::Read<core::DataType>(is_);
+        auto type = static_cast<core::DataType>(util::Read<uint8_t>(is_));
         auto nullable = util::Read<uint8_t>(is_) != 0;
         fields.emplace_back(name, type, nullable);
     }
@@ -84,7 +91,7 @@ void BruhBatchReader::ReadSchema(uint32_t cols_count) {
 
 void BruhBatchReader::ReadRowGroupsMetadata(uint32_t cols_count) {
     metadata_.rows_count = util::Read<uint64_t>(is_);
-    uint32_t groups_count = util::Read<uint32_t>(is_);
+    auto groups_count = util::Read<uint32_t>(is_);
     metadata_.row_groups.reserve(groups_count);
     for (uint32_t i = 0; i < groups_count; ++i) {
         RowGroupMetaData group;
@@ -103,7 +110,7 @@ void BruhBatchReader::ReadRowGroupsMetadata(uint32_t cols_count) {
 }
 
 void BruhBatchReader::ReadColumn(std::unique_ptr<core::Column>& col, const core::Field& field,
-                                 std::size_t n) {
+                                 size_t n) {
     util::BitVector is_null;
     if (field.nullable) {
         auto nulls_data = util::ReadBoolArray(is_, n);
@@ -111,24 +118,36 @@ void BruhBatchReader::ReadColumn(std::unique_ptr<core::Column>& col, const core:
     }
 
     switch (field.type) {
-        case core::DataType::Int64: {
-            auto column_data = util::ReadArray<int64_t>(is_, n);
-            col = std::make_unique<core::Int64Column>(std::move(column_data), std::move(is_null),
-                                                      field.nullable);
-            break;
-        }
-        case core::DataType::Double: {
-            auto column_data = util::ReadArray<double>(is_, n);
-            col = std::make_unique<core::DoubleColumn>(std::move(column_data), std::move(is_null),
-                                                       field.nullable);
-            break;
-        }
+        case core::DataType::Int16:
+            col = ReadNumericColumn<core::Int16Column, int16_t>(is_, std::move(is_null),
+                                                                field.nullable, n);
+            return;
+        case core::DataType::Int32:
+            col = ReadNumericColumn<core::Int32Column, int32_t>(is_, std::move(is_null),
+                                                                field.nullable, n);
+            return;
+        case core::DataType::Int64:
+            col = ReadNumericColumn<core::Int64Column, int64_t>(is_, std::move(is_null),
+                                                                field.nullable, n);
+            return;
+        case core::DataType::Double:
+            col = ReadNumericColumn<core::DoubleColumn, double>(is_, std::move(is_null),
+                                                                field.nullable, n);
+            return;
+        case core::DataType::Date:
+            col = ReadNumericColumn<core::DateColumn, int32_t>(is_, std::move(is_null),
+                                                               field.nullable, n);
+            return;
+        case core::DataType::Timestamp:
+            col = ReadNumericColumn<core::TimestampColumn, int64_t>(is_, std::move(is_null),
+                                                                    field.nullable, n);
+            return;
         case core::DataType::Bool: {
-            auto column_data_bits = util::ReadBoolArray(is_, n);
-            util::BitVector column_data(std::move(column_data_bits), n);
-            col = std::make_unique<core::BoolColumn>(std::move(column_data), std::move(is_null),
+            auto data_bits = util::ReadBoolArray(is_, n);
+            util::BitVector data(std::move(data_bits), n);
+            col = std::make_unique<core::BoolColumn>(std::move(data), std::move(is_null),
                                                      field.nullable, n);
-            break;
+            return;
         }
         case core::DataType::String: {
             auto offset_width = util::Read<uint8_t>(is_);
@@ -136,10 +155,16 @@ void BruhBatchReader::ReadColumn(std::unique_ptr<core::Column>& col, const core:
                 THROW_RUNTIME_ERROR("Unsupported string offset width");
             }
             col = ReadStringColumn(is_, std::move(is_null), field.nullable, n, offset_width);
-            break;
+            return;
         }
-        default:
-            THROW_RUNTIME_ERROR("Unsupported type");
+        case core::DataType::Char: {
+            auto data = util::ReadArray<char>(is_, n);
+            col = std::make_unique<core::CharColumn>(std::move(data), std::move(is_null),
+                                                     field.nullable);
+            return;
+        }
     }
+
+    THROW_RUNTIME_ERROR("Unsupported type");
 }
 }  // namespace columnar::bruh

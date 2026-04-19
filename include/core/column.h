@@ -13,9 +13,9 @@ public:
 
     virtual DataType GetDataType() const = 0;
 
-    virtual std::size_t Size() const = 0;
+    virtual size_t Size() const = 0;
 
-    virtual void Reserve(std::size_t n) = 0;
+    virtual void Reserve(size_t n) = 0;
 
     virtual void AppendFromString(std::string_view s) = 0;
 
@@ -25,11 +25,11 @@ public:
 
     virtual bool IsNullable() const = 0;
 
-    virtual bool IsNull(std::size_t i) const = 0;
+    virtual bool IsNull(size_t i) const = 0;
 
-    virtual std::string GetAsString(std::size_t i) const = 0;
+    virtual std::string GetAsString(size_t i) const = 0;
 
-    virtual void AppendToString(std::size_t i, std::string& out) const = 0;
+    virtual void AppendToString(size_t i, std::string& out) const = 0;
 
     virtual void Clear() = 0;
 };
