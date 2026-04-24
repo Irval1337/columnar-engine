@@ -1,8 +1,7 @@
 #pragma once
 
-#include <concepts>
-#include <fstream>
-#include <cstdint>
+#include <istream>
+#include <ostream>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -38,11 +37,8 @@ inline std::vector<T> ReadArray(std::istream& stream, size_t count) {
     return values;
 }
 
-inline std::vector<uint64_t> ReadBoolArray(std::istream& stream, size_t bits_count) {
-    auto count = (bits_count + 63) / 64;
-    std::vector<uint64_t> values(count);
-    stream.read(reinterpret_cast<char*>(values.data()), sizeof(uint64_t) * count);
-    return values;
+inline void ReadRaw(std::istream& stream, void* dst, size_t n) {
+    stream.read(reinterpret_cast<char*>(dst), n);
 }
 
 template <BinaryTrivial T>
@@ -59,7 +55,7 @@ inline void WriteArray(std::ostream& stream, const std::vector<T>& values) {
     stream.write(reinterpret_cast<const char*>(values.data()), sizeof(T) * values.size());
 }
 
-inline void WriteBoolArray(std::ostream& stream, const std::vector<uint64_t>& words) {
-    WriteArray(stream, words);
+inline void WriteRaw(std::ostream& stream, const void* src, size_t n) {
+    stream.write(reinterpret_cast<const char*>(src), n);
 }
 }  // namespace columnar::util

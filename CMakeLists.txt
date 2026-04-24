@@ -12,6 +12,10 @@ include(cmake/deps.cmake)
 
 add_library(columnar_lib
   src/core/column.cpp
+  src/core/encoding/auto_select.cpp
+  src/core/encoding/bit_packing.cpp
+  src/core/encoding/dictionary.cpp
+  src/core/encoding/rle.cpp
   src/util/buffered_file.cpp
   src/util/date_time.cpp
   src/csv/csv_batch_reader.cpp

@@ -4,8 +4,9 @@
 #include <bruh/format.h>
 #include <util/macro.h>
 
-#include <memory>
+#include <cstdint>
 #include <cstring>
+#include <memory>
 
 // (@Irval1337) TODO: Maybe implement file io using mmap?
 namespace columnar::bruh {
@@ -45,7 +46,8 @@ private:
 
     void ReadRowGroupsMetadata(uint32_t cols_count);
 
-    void ReadColumn(std::unique_ptr<core::Column>& col, const core::Field& field, size_t n);
+    void ReadColumn(std::unique_ptr<core::Column>& col, const core::Field& field,
+                    const ColumnChunkMetaData& chunk);
 
     std::istream& is_;
     FileMetaData metadata_;
