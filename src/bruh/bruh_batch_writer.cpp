@@ -53,7 +53,7 @@ void EncodeOffsetsPlain(std::ostream& os, const std::vector<size_t>& offsets, si
 
 template <typename ColumnT>
 void EncodeNumeric(std::ostream& os, const core::Column& col, bool nullable,
-                   core::Encoding encoding) {
+                   core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding) {
     auto& numeric = static_cast<const ColumnT&>(col);
     if (nullable) {
         WriteBitVector(os, numeric.GetNullMask());
@@ -70,14 +70,26 @@ void EncodeNumeric(std::ostream& os, const core::Column& col, bool nullable,
         case core::Encoding::FrameOfReference:
             if constexpr (std::is_integral_v<ValueT>) {
                 auto& data = numeric.GetData();
-                core::encoding::EncodeFOR<ValueT>(os, data.data(), data.size());
+                if (auto_encoding.has_int_stats) {
+                    core::encoding::EncodeFOR<ValueT>(os, data.data(), data.size(),
+                                                      static_cast<ValueT>(auto_encoding.mn),
+                                                      static_cast<ValueT>(auto_encoding.mx));
+                } else {
+                    core::encoding::EncodeFOR<ValueT>(os, data.data(), data.size());
+                }
                 return;
             }
             THROW_RUNTIME_ERROR("FrameOfReference needs an integer column");
         case core::Encoding::Delta:
             if constexpr (std::is_integral_v<ValueT>) {
                 auto& data = numeric.GetData();
-                core::encoding::EncodeDelta<ValueT>(os, data.data(), data.size());
+                if (auto_encoding.has_int_stats) {
+                    core::encoding::EncodeDelta<ValueT>(
+                        os, data.data(), data.size(), static_cast<ValueT>(auto_encoding.min_delta),
+                        static_cast<ValueT>(auto_encoding.max_delta));
+                } else {
+                    core::encoding::EncodeDelta<ValueT>(os, data.data(), data.size());
+                }
                 return;
             }
             THROW_RUNTIME_ERROR("Delta needs an integer column");
@@ -95,16 +107,16 @@ void EncodeNumeric(std::ostream& os, const core::Column& col, bool nullable,
                     }
                 }
                 uint8_t bit_width = core::encoding::BitWidth(mx);
+                if (bit_width > core::encoding::kBitPackingMaxWidth) {
+                    THROW_RUNTIME_ERROR("bit_width is too large");
+                }
                 util::Write<uint8_t>(os, bit_width);
                 if (bit_width == 0 || data.empty()) {
                     return;
                 }
-                std::vector<uint64_t> extended(data.size());
-                for (size_t i = 0; i < data.size(); ++i) {
-                    extended[i] = static_cast<uint64_t>(data[i]);
-                }
                 std::vector<uint8_t> packed(core::encoding::BitPackedSize(data.size(), bit_width));
-                core::encoding::BitPack(extended.data(), extended.size(), bit_width, packed.data());
+                core::encoding::BitPackWithOffset(data.data(), data.size(), ValueT(0), bit_width,
+                                                  packed.data());
                 util::WriteRaw(os, packed.data(), packed.size());
                 return;
             }
@@ -114,8 +126,7 @@ void EncodeNumeric(std::ostream& os, const core::Column& col, bool nullable,
     }
 }
 
-void EncodeBool(std::ostream& os, const core::Column& col, bool nullable,
-                core::Encoding encoding) {
+void EncodeBool(std::ostream& os, const core::Column& col, bool nullable, core::Encoding encoding) {
     auto& boolcol = static_cast<const core::BoolColumn&>(col);
     if (nullable) {
         WriteBitVector(os, boolcol.GetNullMask());
@@ -133,8 +144,8 @@ void EncodeBool(std::ostream& os, const core::Column& col, bool nullable,
     }
 }
 
-void EncodeString(std::ostream& os, const core::Column& col, bool nullable,
-                  core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding) {
+void EncodeString(std::ostream& os, const core::Column& col, bool nullable, core::Encoding encoding,
+                  const core::encoding::AutoEncoding& auto_encoding) {
     auto& stringcol = static_cast<const core::StringColumn&>(col);
     if (nullable) {
         WriteBitVector(os, stringcol.GetNullMask());
@@ -148,7 +159,8 @@ void EncodeString(std::ostream& os, const core::Column& col, bool nullable,
         }
         case core::Encoding::Dictionary:
             if (!auto_encoding.dict_values.empty()) {
-                core::encoding::EncodeStringDictionary(os, auto_encoding.dict_values, auto_encoding.dict_indexes);
+                core::encoding::EncodeStringDictionary(os, auto_encoding.dict_values,
+                                                       auto_encoding.dict_indexes);
             } else {
                 core::encoding::EncodeStringDictionary(os, stringcol.GetData(),
                                                        stringcol.GetOffsets());
@@ -159,8 +171,7 @@ void EncodeString(std::ostream& os, const core::Column& col, bool nullable,
     }
 }
 
-void EncodeChar(std::ostream& os, const core::Column& col, bool nullable,
-                core::Encoding encoding) {
+void EncodeChar(std::ostream& os, const core::Column& col, bool nullable, core::Encoding encoding) {
     auto& charcol = static_cast<const core::CharColumn&>(col);
     if (nullable) {
         WriteBitVector(os, charcol.GetNullMask());
@@ -170,8 +181,7 @@ void EncodeChar(std::ostream& os, const core::Column& col, bool nullable,
             util::WriteArray(os, charcol.GetData());
             return;
         case core::Encoding::RLE:
-            core::encoding::EncodeRLE<char>(os, charcol.GetData().data(),
-                                            charcol.GetData().size());
+            core::encoding::EncodeRLE<char>(os, charcol.GetData().data(), charcol.GetData().size());
             return;
         default:
             THROW_RUNTIME_ERROR("Encoding does not support char column");
@@ -182,16 +192,16 @@ void EncodeColumn(std::ostream& os, const core::Column& col, const core::Field& 
                   core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding) {
     switch (core::DataTypeToPhysical(field.type)) {
         case core::PhysicalType::Int16:
-            EncodeNumeric<core::Int16Column>(os, col, field.nullable, encoding);
+            EncodeNumeric<core::Int16Column>(os, col, field.nullable, encoding, auto_encoding);
             return;
         case core::PhysicalType::Int32:
-            EncodeNumeric<core::Int32Column>(os, col, field.nullable, encoding);
+            EncodeNumeric<core::Int32Column>(os, col, field.nullable, encoding, auto_encoding);
             return;
         case core::PhysicalType::Int64:
-            EncodeNumeric<core::Int64Column>(os, col, field.nullable, encoding);
+            EncodeNumeric<core::Int64Column>(os, col, field.nullable, encoding, auto_encoding);
             return;
         case core::PhysicalType::Double:
-            EncodeNumeric<core::DoubleColumn>(os, col, field.nullable, encoding);
+            EncodeNumeric<core::DoubleColumn>(os, col, field.nullable, encoding, auto_encoding);
             return;
         case core::PhysicalType::Bool:
             EncodeBool(os, col, field.nullable, encoding);

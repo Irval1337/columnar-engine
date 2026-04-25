@@ -13,6 +13,22 @@
 
 namespace columnar::core::encoding {
 template <std::integral T>
+void EncodeFOR(std::ostream& os, const T* src, size_t n, T mn, T mx) {
+    uint8_t bit_width = BitWidth(static_cast<uint64_t>(mx) - static_cast<uint64_t>(mn));
+    if (bit_width > kBitPackingMaxWidth) {
+        THROW_RUNTIME_ERROR("bit_width is too large");
+    }
+    util::Write<T>(os, mn);
+    util::Write<uint8_t>(os, bit_width);
+    if (bit_width == 0 || n == 0) {
+        return;
+    }
+    std::vector<uint8_t> packed(BitPackedSize(n, bit_width));
+    BitPackWithOffset(src, n, mn, bit_width, packed.data());
+    util::WriteRaw(os, packed.data(), packed.size());
+}
+
+template <std::integral T>
 void EncodeFOR(std::ostream& os, const T* src, size_t n) {
     T mn = n > 0 ? src[0] : T(0);
     T mx = mn;
@@ -24,27 +40,11 @@ void EncodeFOR(std::ostream& os, const T* src, size_t n) {
             mx = src[i];
         }
     }
-
-    uint8_t bit_width = BitWidth(static_cast<uint64_t>(mx) - static_cast<uint64_t>(mn));
-    if (bit_width > kBitPackingMaxWidth) {
-        THROW_RUNTIME_ERROR("bit_width is too large");
-    }
-    util::Write<T>(os, mn);
-    util::Write<uint8_t>(os, bit_width);
-    if (bit_width == 0 || n == 0) {
-        return;
-    }
-    std::vector<uint64_t> remain(n);
-    for (size_t i = 0; i < n; ++i) {
-        remain[i] = static_cast<uint64_t>(src[i]) - static_cast<uint64_t>(mn);
-    }
-    std::vector<uint8_t> packed(BitPackedSize(n, bit_width));
-    BitPack(remain.data(), n, bit_width, packed.data());
-    util::WriteRaw(os, packed.data(), packed.size());
+    EncodeFOR(os, src, n, mn, mx);
 }
 
 template <std::integral T>
-std::vector<T> DecodeFOR(std::istream& is, size_t n) {
+std::vector<T> DecodeFOR(std::istream& is, size_t n, std::vector<uint8_t>& packed) {
     auto mn = util::Read<T>(is);
     auto bit_width = util::Read<uint8_t>(is);
     if (bit_width > kBitPackingMaxWidth) {
@@ -56,13 +56,15 @@ std::vector<T> DecodeFOR(std::istream& is, size_t n) {
         return out;
     }
     size_t packed_size = BitPackedSize(n, bit_width);
-    std::vector<uint8_t> packed(packed_size);
+    packed.resize(packed_size);
     util::ReadRaw(is, packed.data(), packed_size);
-    std::vector<uint64_t> remains(n);
-    BitUnpack(packed.data(), packed_size, n, bit_width, remains.data());
-    for (size_t i = 0; i < n; ++i) {
-        out[i] = static_cast<T>(static_cast<uint64_t>(mn) + remains[i]);
-    }
+    BitUnpackWithOffset(packed.data(), packed_size, n, bit_width, mn, out.data());
     return out;
+}
+
+template <std::integral T>
+std::vector<T> DecodeFOR(std::istream& is, size_t n) {
+    std::vector<uint8_t> packed;
+    return DecodeFOR<T>(is, n, packed);
 }
 }  // namespace columnar::core::encoding

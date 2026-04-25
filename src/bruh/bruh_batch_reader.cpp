@@ -16,9 +16,9 @@
 
 namespace columnar::bruh {
 namespace {
-util::BitVector ReadBitVector(std::istream& is, size_t n) {
+util::BitVector ReadBitVector(std::istream& is, size_t n, std::vector<uint8_t>& packed) {
     size_t packed_size = core::encoding::BitPackedSize(n, 1);
-    std::vector<uint8_t> packed(packed_size);
+    packed.resize(packed_size);
     if (packed_size > 0) {
         util::ReadRaw(is, packed.data(), packed_size);
     }
@@ -44,10 +44,11 @@ std::vector<size_t> DecodeOffsetsPlain(std::istream& is, size_t n) {
 
 template <typename Column, typename T>
 std::unique_ptr<core::Column> DecodeNumeric(std::istream& is, bool nullable,
-                                            core::Encoding encoding, size_t n) {
+                                            core::Encoding encoding, size_t n,
+                                            std::vector<uint8_t>& packed) {
     util::BitVector is_null;
     if (nullable) {
-        is_null = ReadBitVector(is, n);
+        is_null = ReadBitVector(is, n, packed);
     }
     switch (encoding) {
         case core::Encoding::Plain: {
@@ -60,7 +61,7 @@ std::unique_ptr<core::Column> DecodeNumeric(std::istream& is, bool nullable,
         }
         case core::Encoding::FrameOfReference: {
             if constexpr (std::is_integral_v<T>) {
-                auto data = core::encoding::DecodeFOR<T>(is, n);
+                auto data = core::encoding::DecodeFOR<T>(is, n, packed);
                 return std::make_unique<Column>(std::move(data), std::move(is_null), nullable);
             } else {
                 THROW_RUNTIME_ERROR("FrameOfReference needs an integer column");
@@ -68,7 +69,7 @@ std::unique_ptr<core::Column> DecodeNumeric(std::istream& is, bool nullable,
         }
         case core::Encoding::Delta: {
             if constexpr (std::is_integral_v<T>) {
-                auto data = core::encoding::DecodeDelta<T>(is, n);
+                auto data = core::encoding::DecodeDelta<T>(is, n, packed);
                 return std::make_unique<Column>(std::move(data), std::move(is_null), nullable);
             } else {
                 THROW_RUNTIME_ERROR("Delta needs an integer column");
@@ -85,14 +86,10 @@ std::unique_ptr<core::Column> DecodeNumeric(std::istream& is, bool nullable,
                     return std::make_unique<Column>(std::move(data), std::move(is_null), nullable);
                 }
                 size_t packed_size = core::encoding::BitPackedSize(n, bit_width);
-                std::vector<uint8_t> packed(packed_size);
+                packed.resize(packed_size);
                 util::ReadRaw(is, packed.data(), packed_size);
-                std::vector<uint64_t> extended(n);
-                core::encoding::BitUnpack(packed.data(), packed_size, n, bit_width,
-                                          extended.data());
-                for (size_t i = 0; i < n; ++i) {
-                    data[i] = static_cast<T>(extended[i]);
-                }
+                core::encoding::BitUnpackWithOffset(packed.data(), packed_size, n, bit_width, T(0),
+                                                    data.data());
                 return std::make_unique<Column>(std::move(data), std::move(is_null), nullable);
             } else {
                 THROW_RUNTIME_ERROR("BitPacking needs an integer column");
@@ -104,15 +101,15 @@ std::unique_ptr<core::Column> DecodeNumeric(std::istream& is, bool nullable,
 }
 
 std::unique_ptr<core::Column> DecodeBool(std::istream& is, bool nullable, core::Encoding encoding,
-                                         size_t n) {
+                                         size_t n, std::vector<uint8_t>& packed) {
     util::BitVector is_null;
     if (nullable) {
-        is_null = ReadBitVector(is, n);
+        is_null = ReadBitVector(is, n, packed);
     }
     switch (encoding) {
         case core::Encoding::Plain:
         case core::Encoding::BitPacking: {
-            auto data = ReadBitVector(is, n);
+            auto data = ReadBitVector(is, n, packed);
             return std::make_unique<core::BoolColumn>(std::move(data), std::move(is_null), nullable,
                                                       n);
         }
@@ -127,10 +124,10 @@ std::unique_ptr<core::Column> DecodeBool(std::istream& is, bool nullable, core::
 }
 
 std::unique_ptr<core::Column> DecodeString(std::istream& is, bool nullable, core::Encoding encoding,
-                                           size_t n) {
+                                           size_t n, std::vector<uint8_t>& packed) {
     util::BitVector is_null;
     if (nullable) {
-        is_null = ReadBitVector(is, n);
+        is_null = ReadBitVector(is, n, packed);
     }
     switch (encoding) {
         case core::Encoding::Plain: {
@@ -150,10 +147,10 @@ std::unique_ptr<core::Column> DecodeString(std::istream& is, bool nullable, core
 }
 
 std::unique_ptr<core::Column> DecodeChar(std::istream& is, bool nullable, core::Encoding encoding,
-                                         size_t n) {
+                                         size_t n, std::vector<uint8_t>& packed) {
     util::BitVector is_null;
     if (nullable) {
-        is_null = ReadBitVector(is, n);
+        is_null = ReadBitVector(is, n, packed);
     }
     switch (encoding) {
         case core::Encoding::Plain: {
@@ -253,36 +250,37 @@ void BruhBatchReader::ReadColumn(std::unique_ptr<core::Column>& col, const core:
     switch (field.type) {
         case core::DataType::Int16:
             col = DecodeNumeric<core::Int16Column, int16_t>(is_, field.nullable, chunk.encoding,
-                                                            chunk.values_count);
+                                                            chunk.values_count, packed_buf_);
             return;
         case core::DataType::Int32:
             col = DecodeNumeric<core::Int32Column, int32_t>(is_, field.nullable, chunk.encoding,
-                                                            chunk.values_count);
+                                                            chunk.values_count, packed_buf_);
             return;
         case core::DataType::Int64:
             col = DecodeNumeric<core::Int64Column, int64_t>(is_, field.nullable, chunk.encoding,
-                                                            chunk.values_count);
+                                                            chunk.values_count, packed_buf_);
             return;
         case core::DataType::Double:
             col = DecodeNumeric<core::DoubleColumn, double>(is_, field.nullable, chunk.encoding,
-                                                            chunk.values_count);
+                                                            chunk.values_count, packed_buf_);
             return;
         case core::DataType::Date:
             col = DecodeNumeric<core::DateColumn, int32_t>(is_, field.nullable, chunk.encoding,
-                                                           chunk.values_count);
+                                                           chunk.values_count, packed_buf_);
             return;
         case core::DataType::Timestamp:
             col = DecodeNumeric<core::TimestampColumn, int64_t>(is_, field.nullable, chunk.encoding,
-                                                                chunk.values_count);
+                                                                chunk.values_count, packed_buf_);
             return;
         case core::DataType::Bool:
-            col = DecodeBool(is_, field.nullable, chunk.encoding, chunk.values_count);
+            col = DecodeBool(is_, field.nullable, chunk.encoding, chunk.values_count, packed_buf_);
             return;
         case core::DataType::String:
-            col = DecodeString(is_, field.nullable, chunk.encoding, chunk.values_count);
+            col =
+                DecodeString(is_, field.nullable, chunk.encoding, chunk.values_count, packed_buf_);
             return;
         case core::DataType::Char:
-            col = DecodeChar(is_, field.nullable, chunk.encoding, chunk.values_count);
+            col = DecodeChar(is_, field.nullable, chunk.encoding, chunk.values_count, packed_buf_);
             return;
     }
     THROW_RUNTIME_ERROR("Unsupported type");

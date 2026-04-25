@@ -2,26 +2,20 @@
 
 namespace columnar::core::encoding {
 void EncodeBoolRLE(std::ostream& os, const util::BitVector& bits, size_t n) {
-    uint32_t run_count = 0;
+    std::vector<Run<uint8_t>> runs;
     for (size_t i = 0; i < n;) {
         bool v = bits.Get(i);
         size_t j = i + 1;
         while (j < n && bits.Get(j) == v) {
             ++j;
         }
-        ++run_count;
+        runs.push_back({static_cast<uint32_t>(j - i), v ? uint8_t{1} : uint8_t{0}});
         i = j;
     }
-    util::Write<uint32_t>(os, run_count);
-    for (size_t i = 0; i < n;) {
-        bool v = bits.Get(i);
-        size_t j = i + 1;
-        while (j < n && bits.Get(j) == v) {
-            ++j;
-        }
-        util::Write<uint32_t>(os, static_cast<uint32_t>(j - i));
-        util::Write<uint8_t>(os, v ? 1 : 0);
-        i = j;
+    util::Write<uint32_t>(os, runs.size());
+    for (auto& run : runs) {
+        util::Write<uint32_t>(os, run.len);
+        util::Write<uint8_t>(os, run.value);
     }
 }
 

@@ -1,4 +1,5 @@
 #include <core/encoding/bit_packing.h>
+#include <core/encoding/delta.h>
 #include <gtest/gtest.h>
 #include <bruh/bruh.h>
 #include <core/schema.h>
@@ -15,8 +16,7 @@ using namespace columnar;  // NOLINT
 
 namespace {
 void WriteDictString(std::stringstream& ss, const core::Schema& schema,
-                     const std::vector<std::string>& values,
-                     const std::vector<bool>& is_null) {
+                     const std::vector<std::string>& values, const std::vector<bool>& is_null) {
     bruh::BruhWriterOptions opts;
     opts.force_encoding = core::Encoding::Dictionary;
     bruh::BruhBatchWriter writer(ss, schema, opts);
@@ -64,8 +64,7 @@ TEST(BruhDictionary, StringLowCardinalityRoundTrip) {
     for (size_t i = 0; i < values.size(); ++i) {
         EXPECT_EQ(batch.ColumnAt(0).GetAsString(i), values[i]);
     }
-    EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding,
-              core::Encoding::Dictionary);
+    EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding, core::Encoding::Dictionary);
 }
 
 TEST(BruhDictionary, StringHighCardinalityUsesUint16Indices) {
@@ -382,8 +381,7 @@ TEST(BruhBitPacking, Int32UnsignedRoundTrip) {
     for (size_t i = 0; i < values.size(); ++i) {
         EXPECT_EQ(batch.ColumnAt(0).GetAsString(i), std::to_string(values[i]));
     }
-    EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding,
-              core::Encoding::BitPacking);
+    EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding, core::Encoding::BitPacking);
 }
 
 TEST(BruhBitPacking, BoolRoundTrip) {
@@ -414,8 +412,7 @@ TEST(BruhBitPacking, BoolRoundTrip) {
     for (size_t i = 0; i < values.size(); ++i) {
         EXPECT_EQ(batch.ColumnAt(0).GetAsString(i), values[i] ? "true" : "false");
     }
-    EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding,
-              core::Encoding::BitPacking);
+    EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding, core::Encoding::BitPacking);
 }
 
 TEST(BruhBitPacking, RejectsNegativeValues) {
@@ -504,6 +501,18 @@ TEST(BruhDelta, TimestampRoundTrip) {
     }
 }
 
+TEST(BruhDelta, EmptyPayloadHasNoExtraBytes) {
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    std::vector<int64_t> values;
+    core::encoding::EncodeDelta<int64_t>(ss, values.data(), values.size());
+
+    EXPECT_EQ(ss.tellp(), static_cast<std::streamoff>(sizeof(int64_t)));
+    ss.seekg(0);
+    auto out = core::encoding::DecodeDelta<int64_t>(ss, 0);
+    EXPECT_TRUE(out.empty());
+    EXPECT_EQ(ss.tellg(), static_cast<std::streamoff>(sizeof(int64_t)));
+}
+
 TEST(BruhAutoSelect, LowCardinalityStringsPicksDictionary) {
     core::Schema schema({core::Field("s", core::DataType::String)});
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
@@ -520,8 +529,7 @@ TEST(BruhAutoSelect, LowCardinalityStringsPicksDictionary) {
     }
     ss.seekg(0);
     bruh::BruhBatchReader reader(ss);
-    EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding,
-              core::Encoding::Dictionary);
+    EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding, core::Encoding::Dictionary);
 }
 
 TEST(BruhAutoSelect, HighCardinalityStringsPicksPlain) {
@@ -638,8 +646,7 @@ TEST(BruhAutoSelect, RandomBoolPicksBitPacking) {
     }
     ss.seekg(0);
     bruh::BruhBatchReader reader(ss);
-    EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding,
-              core::Encoding::BitPacking);
+    EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding, core::Encoding::BitPacking);
 }
 
 TEST(BruhAutoSelect, DoubleAlwaysPicksPlain) {
@@ -683,18 +690,19 @@ TEST(BruhAutoSelect, MonotonicTimestampPicksDelta) {
 }
 
 namespace {
-using columnar::core::encoding::BitPack;
 using columnar::core::encoding::BitPackedSize;
-using columnar::core::encoding::BitUnpack;
+using columnar::core::encoding::BitPackWithOffset;
+using columnar::core::encoding::BitUnpackWithOffset;
 using columnar::core::encoding::BitWidth;
 using columnar::core::encoding::PackBitVector;
 using columnar::core::encoding::UnpackBitVector;
 
 void BitPackRoundTrip(const std::vector<uint64_t>& values, uint8_t bit_width) {
     std::vector<uint8_t> packed(BitPackedSize(values.size(), bit_width));
-    BitPack(values.data(), values.size(), bit_width, packed.data());
+    BitPackWithOffset(values.data(), values.size(), uint64_t{0}, bit_width, packed.data());
     std::vector<uint64_t> out(values.size());
-    BitUnpack(packed.data(), packed.size(), values.size(), bit_width, out.data());
+    BitUnpackWithOffset(packed.data(), packed.size(), values.size(), bit_width, uint64_t{0},
+                        out.data());
     ASSERT_EQ(out, values);
 }
 }  // namespace
@@ -705,13 +713,17 @@ TEST(BitPacking, ZeroWidth) {
 
 TEST(BitPacking, SingleBit) {
     std::vector<uint64_t> values;
-    for (size_t i = 0; i < 200; ++i) { values.push_back(i & 1); }
+    for (size_t i = 0; i < 200; ++i) {
+        values.push_back(i & 1);
+    }
     BitPackRoundTrip(values, 1);
 }
 
 TEST(BitPacking, SevenBits) {
     std::vector<uint64_t> values;
-    for (size_t i = 0; i < 1000; ++i) { values.push_back(i % 128); }
+    for (size_t i = 0; i < 1000; ++i) {
+        values.push_back(i % 128);
+    }
     BitPackRoundTrip(values, 7);
 }
 
@@ -719,7 +731,9 @@ TEST(BitPacking, ThirtyThreeBits) {
     std::mt19937_64 rng(0xC0FFEE);
     uint64_t mask = (uint64_t{1} << 33) - 1;
     std::vector<uint64_t> values;
-    for (size_t i = 0; i < 500; ++i) { values.push_back(rng() & mask); }
+    for (size_t i = 0; i < 500; ++i) {
+        values.push_back(rng() & mask);
+    }
     BitPackRoundTrip(values, 33);
 }
 
@@ -727,7 +741,9 @@ TEST(BitPacking, FiftySixBits) {
     std::mt19937_64 rng(42);
     uint64_t mask = (uint64_t{1} << 56) - 1;
     std::vector<uint64_t> values;
-    for (size_t i = 0; i < 300; ++i) { values.push_back(rng() & mask); }
+    for (size_t i = 0; i < 300; ++i) {
+        values.push_back(rng() & mask);
+    }
     BitPackRoundTrip(values, 56);
 }
 
@@ -737,21 +753,24 @@ TEST(BitPacking, RandomWidths) {
         uint64_t mask = (uint64_t{1} << w) - 1;
         size_t n = 1 + rng() % 200;
         std::vector<uint64_t> values(n);
-        for (auto& v : values) { v = rng() & mask; }
+        for (auto& v : values) {
+            v = rng() & mask;
+        }
         BitPackRoundTrip(values, w);
     }
 }
 
 TEST(BitPacking, EmptyInput) {
     std::vector<uint64_t> out;
-    BitUnpack(nullptr, 0, 0, 7, out.data());
+    BitUnpackWithOffset<uint64_t>(nullptr, 0, 0, 7, 0, out.data());
     SUCCEED();
 }
 
 TEST(BitPacking, UnderrunThrows) {
     std::vector<uint8_t> packed(2, 0);
     std::vector<uint64_t> out(100);
-    EXPECT_THROW(BitUnpack(packed.data(), packed.size(), 100, 8, out.data()), std::runtime_error);
+    EXPECT_THROW(BitUnpackWithOffset(packed.data(), packed.size(), 100, 8, uint64_t{0}, out.data()),
+                 std::runtime_error);
 }
 
 TEST(BitPacking, BitWidthHelper) {
@@ -765,10 +784,14 @@ TEST(BitPacking, BitWidthHelper) {
 
 TEST(BitPacking, BitVectorRoundTrip) {
     util::BitVector bits;
-    for (size_t i = 0; i < 1000; ++i) { bits.PushBack((i % 3) == 1); }
+    for (size_t i = 0; i < 1000; ++i) {
+        bits.PushBack((i % 3) == 1);
+    }
     std::vector<uint8_t> packed(BitPackedSize(bits.Size(), 1));
     PackBitVector(bits, packed.data());
     auto out = UnpackBitVector(packed.data(), packed.size(), bits.Size());
     ASSERT_EQ(out.Size(), bits.Size());
-    for (size_t i = 0; i < bits.Size(); ++i) { EXPECT_EQ(out.Get(i), bits.Get(i)); }
+    for (size_t i = 0; i < bits.Size(); ++i) {
+        EXPECT_EQ(out.Get(i), bits.Get(i));
+    }
 }

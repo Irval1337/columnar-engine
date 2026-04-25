@@ -22,9 +22,9 @@ constexpr size_t kDictMinBytes = 1024;
 constexpr size_t kProbeRows = 1024;
 
 template <typename T>
-Encoding PickIntegerEncoding(const std::vector<T>& data, bool prefer_delta) {
+void PickIntegerEncoding(const std::vector<T>& data, bool prefer_delta, AutoEncoding& result) {
     if (data.empty()) {
-        return Encoding::Plain;
+        return;
     }
 
     T mn = data[0];
@@ -41,6 +41,9 @@ Encoding PickIntegerEncoding(const std::vector<T>& data, bool prefer_delta) {
             sorted = false;
         }
     }
+    result.has_int_stats = true;
+    result.mn = mn;
+    result.mx = mx;
 
     size_t best = sizeof(T) * data.size();
     Encoding encoding = Encoding::Plain;
@@ -55,10 +58,12 @@ Encoding PickIntegerEncoding(const std::vector<T>& data, bool prefer_delta) {
     }
 
     if (sorted && data.size() > 1) {
-        uint64_t min_delta = std::numeric_limits<uint64_t>::max();
-        uint64_t max_delta = 0;
+        T min_delta =
+            static_cast<T>(static_cast<uint64_t>(data[1]) - static_cast<uint64_t>(data[0]));
+        T max_delta = min_delta;
         for (size_t i = 1; i < data.size(); ++i) {
-            uint64_t d = static_cast<uint64_t>(data[i]) - static_cast<uint64_t>(data[i - 1]);
+            T d =
+                static_cast<T>(static_cast<uint64_t>(data[i]) - static_cast<uint64_t>(data[i - 1]));
             if (d < min_delta) {
                 min_delta = d;
             }
@@ -66,7 +71,11 @@ Encoding PickIntegerEncoding(const std::vector<T>& data, bool prefer_delta) {
                 max_delta = d;
             }
         }
-        uint8_t delta_width = BitWidth(max_delta - min_delta);
+        result.min_delta = min_delta;
+        result.max_delta = max_delta;
+
+        uint8_t delta_width =
+            BitWidth(static_cast<uint64_t>(max_delta) - static_cast<uint64_t>(min_delta));
         if (delta_width <= kBitPackingMaxWidth) {
             size_t sz = 2 * sizeof(T) + 1 + BitPackedSize(data.size() - 1, delta_width);
             if (prefer_delta ? sz <= best : sz < best) {
@@ -74,7 +83,7 @@ Encoding PickIntegerEncoding(const std::vector<T>& data, bool prefer_delta) {
             }
         }
     }
-    return encoding;
+    result.encoding = encoding;
 }
 
 struct RunStats {
@@ -197,24 +206,19 @@ AutoEncoding SelectEncoding(const Column& col, const Field& field) {
             PickStringEncoding(static_cast<const StringColumn&>(col), result);
             return result;
         case DataType::Int16:
-            result.encoding =
-                PickIntegerEncoding(static_cast<const Int16Column&>(col).GetData(), false);
+            PickIntegerEncoding(static_cast<const Int16Column&>(col).GetData(), false, result);
             return result;
         case DataType::Int32:
-            result.encoding =
-                PickIntegerEncoding(static_cast<const Int32Column&>(col).GetData(), false);
+            PickIntegerEncoding(static_cast<const Int32Column&>(col).GetData(), false, result);
             return result;
         case DataType::Int64:
-            result.encoding =
-                PickIntegerEncoding(static_cast<const Int64Column&>(col).GetData(), false);
+            PickIntegerEncoding(static_cast<const Int64Column&>(col).GetData(), false, result);
             return result;
         case DataType::Date:
-            result.encoding =
-                PickIntegerEncoding(static_cast<const Int32Column&>(col).GetData(), true);
+            PickIntegerEncoding(static_cast<const Int32Column&>(col).GetData(), true, result);
             return result;
         case DataType::Timestamp:
-            result.encoding =
-                PickIntegerEncoding(static_cast<const Int64Column&>(col).GetData(), true);
+            PickIntegerEncoding(static_cast<const Int64Column&>(col).GetData(), true, result);
             return result;
     }
     return result;

@@ -11,26 +11,27 @@
 #include <vector>
 
 namespace columnar::core::encoding {
+template <typename T>
+struct Run {
+    uint32_t len;
+    T value;
+};
+
 template <util::BinaryTrivial T>
 void EncodeRLE(std::ostream& os, const T* data, size_t n) {
-    uint32_t cnt = 0;
+    std::vector<Run<T>> runs;
     for (size_t i = 0; i < n;) {
         size_t j = i + 1;
         while (j < n && data[j] == data[i]) {
             ++j;
         }
-        ++cnt;
+        runs.push_back({static_cast<uint32_t>(j - i), data[i]});
         i = j;
     }
-    util::Write<uint32_t>(os, cnt);
-    for (size_t i = 0; i < n;) {
-        size_t j = i + 1;
-        while (j < n && data[j] == data[i]) {
-            ++j;
-        }
-        util::Write<uint32_t>(os, static_cast<uint32_t>(j - i));
-        util::Write<T>(os, data[i]);
-        i = j;
+    util::Write<uint32_t>(os, runs.size());
+    for (auto& run : runs) {
+        util::Write<uint32_t>(os, run.len);
+        util::Write<T>(os, run.value);
     }
 }
 

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <vector>
 
 // (@Irval1337) TODO: Maybe implement file io using mmap?
 namespace columnar::bruh {
@@ -52,5 +53,6 @@ private:
     std::istream& is_;
     FileMetaData metadata_;
     size_t curr_row_group_;
+    std::vector<uint8_t> packed_buf_;
 };
 }  // namespace columnar::bruh
