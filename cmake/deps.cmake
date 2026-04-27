@@ -28,3 +28,25 @@ FetchContent_Declare(
 )
 set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(absl)
+
+set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
+set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  lz4
+  URL https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.zip
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SOURCE_SUBDIR build/cmake
+)
+FetchContent_MakeAvailable(lz4)
+
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  zstd
+  URL https://github.com/facebook/zstd/archive/refs/tags/v1.5.6.zip
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SOURCE_SUBDIR build/cmake
+)
+FetchContent_MakeAvailable(zstd)

@@ -1,5 +1,6 @@
-#include <csv/csv_batch_writer.h>
+#include <core/columns/char_column.h>
 #include <core/columns/string_column.h>
+#include <csv/csv_batch_writer.h>
 
 namespace columnar::csv {
 void CSVBatchWriter::Write(const core::Batch& batch) {
@@ -12,13 +13,12 @@ void CSVBatchWriter::Write(const core::Batch& batch) {
     col_views_.clear();
     col_views_.reserve(cols.size());
     for (const auto& col : cols) {
-        col_views_.push_back(
-            {col.get(), col->GetDataType() == core::DataType::String, col->IsNullable()});
+        col_views_.push_back({col.get(), col->GetDataType(), col->IsNullable()});
     }
 
-    for (std::size_t row = 0; row < batch.RowsCount(); ++row) {
+    for (size_t row = 0; row < batch.RowsCount(); ++row) {
         line_buf_.clear();
-        for (std::size_t col = 0; col < col_views_.size(); ++col) {
+        for (size_t col = 0; col < col_views_.size(); ++col) {
             if (col > 0) {
                 line_buf_ += options_.delimiter;
             }
@@ -26,7 +26,7 @@ void CSVBatchWriter::Write(const core::Batch& batch) {
             if (view.nullable && view.column->IsNull(row)) {
                 continue;
             }
-            if (view.is_string) {
+            if (view.type == core::DataType::String) {
                 auto value = static_cast<const core::StringColumn*>(view.column)->Get(row);
                 if (value.empty()) {
                     line_buf_ += options_.quote_char;
@@ -34,6 +34,9 @@ void CSVBatchWriter::Write(const core::Batch& batch) {
                 } else {
                     AppendField(value);
                 }
+            } else if (view.type == core::DataType::Char) {
+                char value = static_cast<const core::CharColumn*>(view.column)->Get(row);
+                AppendField(std::string_view(&value, 1));
             } else {
                 view.column->AppendToString(row, line_buf_);
             }
@@ -45,7 +48,7 @@ void CSVBatchWriter::Write(const core::Batch& batch) {
 void CSVBatchWriter::WriteHeader(const core::Schema& schema) {
     line_buf_.clear();
     const auto& fields = schema.GetFields();
-    for (std::size_t i = 0; i < fields.size(); ++i) {
+    for (size_t i = 0; i < fields.size(); ++i) {
         if (i > 0) {
             line_buf_ += options_.delimiter;
         }
@@ -56,7 +59,7 @@ void CSVBatchWriter::WriteHeader(const core::Schema& schema) {
 
 void CSVBatchWriter::AppendField(std::string_view value) {
     bool need_quotes = false;
-    std::size_t quotes = 0;
+    size_t quotes = 0;
     for (char c : value) {
         if (c == options_.quote_char) {
             ++quotes;

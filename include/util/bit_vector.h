@@ -9,19 +9,39 @@ public:
     BitVector() : size_(0) {
     }
 
-    BitVector(std::vector<uint64_t>&& data, std::size_t size)
-        : size_(size), bits_(std::move(data)) {
+    BitVector(std::vector<uint64_t>&& data, size_t size) : size_(size), bits_(std::move(data)) {
     }
 
-    BitVector(std::size_t size) {
+    BitVector(size_t size) {
         size_ = size;
         bits_.resize((size + 63) / 64, 0);
     }
 
     ~BitVector() = default;
 
-    void Set(std::size_t i) {
+    void Set(size_t i) {
         bits_[i / 64] |= static_cast<uint64_t>(1) << (i % 64);
+    }
+
+    void SetRange(size_t pos, size_t len) {
+        if (len == 0) {
+            return;
+        }
+        size_t head_word = pos / 64;
+        size_t tail_word = (pos + len) / 64;
+        uint64_t ones = -1;
+        if (head_word == tail_word) {
+            uint64_t mask = (ones << (pos % 64)) & (ones >> (64 - (pos + len) % 64));
+            bits_[head_word] |= mask;
+            return;
+        }
+        bits_[head_word] |= ones << (pos % 64);
+        for (size_t w = head_word + 1; w < tail_word; ++w) {
+            bits_[w] = ones;
+        }
+        if ((pos + len) % 64 > 0) {
+            bits_[tail_word] |= ones >> (64 - (pos + len) % 64);
+        }
     }
 
     void PushBack(bool value) {
@@ -39,15 +59,15 @@ public:
         size_ = 0;
     }
 
-    void Reserve(std::size_t n) {
+    void Reserve(size_t n) {
         bits_.reserve((n + 63) / 64);
     }
 
-    bool Get(std::size_t i) const {
+    bool Get(size_t i) const {
         return (bits_[i / 64] >> (i % 64)) & 1;
     }
 
-    std::size_t Size() const {
+    size_t Size() const {
         return size_;
     }
 

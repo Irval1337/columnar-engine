@@ -1,7 +1,9 @@
 #pragma once
 
 #include <core/datatype.h>
+#include <core/encoding.h>
 #include <core/schema.h>
+#include <util/compression.h>
 
 #include <cstdint>
 #include <vector>
@@ -16,12 +18,15 @@
 // My amazing DB uses ONLY little-endian bytes ordering
 namespace columnar::bruh {
 constexpr uint8_t kMagicBytes[8] = {'B', 'R', 'U', 'H', 'D', 'B', 0x67, 0x67};
-constexpr int kCurrentVersion = 2;
+constexpr int kCurrentVersion = 5;
 
 struct ColumnChunkMetaData {
     uint64_t offset;
-    uint64_t byte_size;  // (@Irval1337) TODO: split this into compressed and decompressed sizes
+    uint64_t compressed_size;
+    uint64_t uncompressed_size;
     uint64_t values_count;
+    core::Encoding encoding;
+    util::Compression compression;
 };
 
 struct RowGroupMetaData {
@@ -31,9 +36,9 @@ struct RowGroupMetaData {
 };
 
 struct FileMetaData {
-    int version;
+    int version = kCurrentVersion;
     core::Schema schema;
-    uint64_t rows_count;
+    uint64_t rows_count = 0;
     std::vector<RowGroupMetaData> row_groups;
 };
 }  // namespace columnar::bruh

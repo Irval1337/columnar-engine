@@ -84,7 +84,7 @@ TEST(BruhBatchReader, MultipleRowGroups) {
     bruh::BruhBatchReader reader(ss);
     EXPECT_EQ(reader.NumRowGroups(), 3);
 
-    for (std::size_t group = 0; group < 3; ++group) {
+    for (size_t group = 0; group < 3; ++group) {
         auto batch = reader.ReadRowGroup(group);
         EXPECT_EQ(batch.RowsCount(), 2);
         EXPECT_EQ(batch.ColumnAt(0).GetAsString(0), std::to_string(group * 10));
@@ -167,6 +167,41 @@ TEST(BruhBatchReader, AllDataTypes) {
     EXPECT_EQ(batch.ColumnAt(3).GetAsString(0), "test");
 }
 
+TEST(BruhBatchReader, LogicalAndCharTypes) {
+    core::Schema schema({core::Field("d", core::DataType::Date),
+                         core::Field("ts", core::DataType::Timestamp),
+                         core::Field("c", core::DataType::Char)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhBatchWriter writer(ss, schema);
+        core::Batch batch(schema);
+        batch.ColumnAt(0).AppendFromString("2026-01-02");
+        batch.ColumnAt(1).AppendFromString("2026-01-02 03:04:05");
+        batch.ColumnAt(2).AppendFromString("a");
+        batch.ColumnAt(0).AppendFromString("2026-02-03");
+        batch.ColumnAt(1).AppendFromString("2026-02-03 04:05:06");
+        batch.ColumnAt(2).AppendFromString("b");
+        writer.Write(batch);
+        writer.Flush();
+    }
+
+    ss.seekg(0);
+    bruh::BruhBatchReader reader(ss);
+    auto& read_schema = reader.GetSchema();
+    EXPECT_EQ(read_schema.GetFields()[0].type, core::DataType::Date);
+    EXPECT_EQ(read_schema.GetFields()[1].type, core::DataType::Timestamp);
+    EXPECT_EQ(read_schema.GetFields()[2].type, core::DataType::Char);
+
+    auto batch = reader.ReadRowGroup(0);
+    EXPECT_EQ(batch.RowsCount(), 2);
+    EXPECT_EQ(batch.ColumnAt(0).GetAsString(0), "2026-01-02");
+    EXPECT_EQ(batch.ColumnAt(1).GetAsString(0), "2026-01-02 03:04:05");
+    EXPECT_EQ(batch.ColumnAt(2).GetAsString(0), "a");
+    EXPECT_EQ(batch.ColumnAt(0).GetAsString(1), "2026-02-03");
+    EXPECT_EQ(batch.ColumnAt(1).GetAsString(1), "2026-02-03 04:05:06");
+    EXPECT_EQ(batch.ColumnAt(2).GetAsString(1), "b");
+}
+
 TEST(BruhBatchWriter, EmptyBatch) {
     core::Schema schema({core::Field("x", core::DataType::Int64)});
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
@@ -191,7 +226,7 @@ TEST(BruhBatchWriter, LargeBatch) {
     {
         bruh::BruhBatchWriter writer(ss, schema);
         core::Batch batch(schema);
-        for (std::size_t i = 0; i < size; ++i) {
+        for (size_t i = 0; i < size; ++i) {
             batch.ColumnAt(0).AppendFromString(std::to_string(i));
             batch.ColumnAt(1).AppendFromString("data_" + std::to_string(i));
         }
@@ -228,7 +263,7 @@ TEST(BruhBatchWriter, SpecialCharacters) {
     bruh::BruhBatchReader reader(ss);
     auto batch = reader.ReadRowGroup(0);
     EXPECT_EQ(batch.RowsCount(), test_strings.size());
-    for (std::size_t i = 0; i < test_strings.size(); ++i) {
+    for (size_t i = 0; i < test_strings.size(); ++i) {
         EXPECT_EQ(batch.ColumnAt(0).GetAsString(i), test_strings[i]);
     }
 }
@@ -250,7 +285,7 @@ TEST(BruhBatchReader, AllNullColumn) {
     bruh::BruhBatchReader reader(ss);
     auto batch = reader.ReadRowGroup(0);
     EXPECT_EQ(batch.RowsCount(), 5);
-    for (std::size_t i = 0; i < 5; ++i) {
+    for (size_t i = 0; i < 5; ++i) {
         EXPECT_TRUE(batch.ColumnAt(0).IsNull(i));
     }
 }
@@ -292,6 +327,39 @@ TEST(BruhFullInterface, NullCsvAndBruh) {
     std::string csv_data = "1,a\n2,\n3,c\n";
     core::Schema schema({core::Field("id", core::DataType::Int64),
                          core::Field("smth", core::DataType::String, true)});
+    std::stringstream bruh_ss(std::ios::in | std::ios::out | std::ios::binary);
+
+    {
+        std::istringstream csv_in(csv_data);
+        csv::CSVBatchReader csv_reader(csv_in, schema, {});
+        bruh::BruhBatchWriter bruh_writer(bruh_ss, schema);
+
+        while (auto batch = csv_reader.ReadNext()) {
+            bruh_writer.Write(*batch);
+        }
+        bruh_writer.Flush();
+    }
+
+    bruh_ss.seekg(0);
+    std::ostringstream csv_out;
+    {
+        bruh::BruhBatchReader bruh_reader(bruh_ss);
+        csv::CSVBatchWriter csv_writer(csv_out, {});
+
+        while (auto batch = bruh_reader.ReadNext()) {
+            csv_writer.Write(*batch);
+        }
+        csv_writer.Flush();
+    }
+
+    EXPECT_EQ(csv_out.str(), csv_data);
+}
+
+TEST(BruhFullInterface, LogicalAndCharTypes) {
+    std::string csv_data = "2026-01-02,2026-01-02 03:04:05,a\n2026-02-03,2026-02-03 04:05:06,b\n";
+    core::Schema schema({core::Field("d", core::DataType::Date),
+                         core::Field("ts", core::DataType::Timestamp),
+                         core::Field("c", core::DataType::Char)});
     std::stringstream bruh_ss(std::ios::in | std::ios::out | std::ios::binary);
 
     {

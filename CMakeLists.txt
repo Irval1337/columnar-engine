@@ -12,7 +12,12 @@ include(cmake/deps.cmake)
 
 add_library(columnar_lib
   src/core/column.cpp
+  src/core/encoding/auto_select.cpp
+  src/core/encoding/dictionary.cpp
+  src/core/encoding/rle.cpp
   src/util/buffered_file.cpp
+  src/util/compression.cpp
+  src/util/date_time.cpp
   src/csv/csv_batch_reader.cpp
   src/csv/csv_batch_writer.cpp
   src/csv/csv_row_reader.cpp
@@ -22,6 +27,13 @@ add_library(columnar_lib
 )
 
 target_include_directories(columnar_lib PUBLIC ${PROJECT_SOURCE_DIR}/include)
+
+target_include_directories(columnar_lib PRIVATE
+  ${lz4_SOURCE_DIR}/lib
+  ${zstd_SOURCE_DIR}/lib
+)
+
+target_link_libraries(columnar_lib PRIVATE lz4_static libzstd_static)
 
 target_compile_options(columnar_lib PRIVATE -Wall -Wextra -Wpedantic)
 

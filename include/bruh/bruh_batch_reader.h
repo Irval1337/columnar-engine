@@ -2,12 +2,12 @@
 
 #include <core/batch_reader.h>
 #include <bruh/format.h>
+#include <util/byte_buffer.h>
 #include <util/macro.h>
 
-#include <fstream>
+#include <cstdint>
 #include <memory>
-#include <string>
-#include <cstring>
+#include <vector>
 
 // (@Irval1337) TODO: Maybe implement file io using mmap?
 namespace columnar::bruh {
@@ -24,9 +24,9 @@ public:
         return ReadRowGroup(curr_row_group_++);
     }
 
-    core::Batch ReadRowGroup(std::size_t i);
+    core::Batch ReadRowGroup(size_t i);
 
-    std::size_t NumRowGroups() const {
+    size_t NumRowGroups() const {
         return metadata_.row_groups.size();
     }
 
@@ -47,10 +47,14 @@ private:
 
     void ReadRowGroupsMetadata(uint32_t cols_count);
 
-    void ReadColumn(std::unique_ptr<core::Column>& col, const core::Field& field, std::size_t n);
+    void ReadColumn(util::BufReader& r, std::unique_ptr<core::Column>& col,
+                    const core::Field& field, const ColumnChunkMetaData& chunk);
 
     std::istream& is_;
     FileMetaData metadata_;
-    std::size_t curr_row_group_;
+    size_t curr_row_group_;
+    std::vector<uint8_t> packed_buf_;
+    std::vector<uint8_t> compress_buf_;
+    std::vector<uint8_t> encode_buf_;
 };
 }  // namespace columnar::bruh

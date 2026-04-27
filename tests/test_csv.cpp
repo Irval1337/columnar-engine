@@ -132,6 +132,25 @@ TEST(SchemaReader, ReadWrite) {
               NormalizeCSV("id,int64\nname,string,nullable\nmoney,double"));
 }
 
+TEST(SchemaReader, ReadWriteLogicalAndCharTypes) {
+    std::istringstream in("birth_date,date\ncreated_at,timestamp\ngrade,char,nullable\nscore,int32");
+    auto schema = csv::SchemaManager::ReadFromStream(in);
+
+    EXPECT_EQ(schema.FieldsCount(), 4);
+    EXPECT_EQ(schema.GetFields()[0].type, core::DataType::Date);
+    EXPECT_EQ(core::DataTypeToPhysical(schema.GetFields()[0].type), core::PhysicalType::Int32);
+    EXPECT_EQ(schema.GetFields()[1].type, core::DataType::Timestamp);
+    EXPECT_EQ(schema.GetFields()[2].type, core::DataType::Char);
+    EXPECT_TRUE(schema.GetFields()[2].nullable);
+    EXPECT_EQ(schema.GetFields()[3].type, core::DataType::Int32);
+
+    std::ostringstream out;
+    csv::SchemaManager::WriteToStream(out, schema);
+
+    EXPECT_EQ(NormalizeCSV(out.str()),
+              NormalizeCSV("birth_date,date\ncreated_at,timestamp\ngrade,char,nullable\nscore,int32"));
+}
+
 TEST(CSVBatchReader, ReadBatches) {
     core::Schema schema({core::Field("x", core::DataType::Int64),
                          core::Field("y", core::DataType::String),
@@ -167,6 +186,32 @@ TEST(CSVBatchReader, BoolColumn) {
     EXPECT_EQ(batch->ColumnAt(0).GetAsString(1), "false");
     EXPECT_EQ(batch->ColumnAt(0).GetAsString(2), "true");
     EXPECT_EQ(batch->ColumnAt(0).GetAsString(3), "false");
+}
+
+TEST(CSVBatchReader, DateTimestampAndChar) {
+    core::Schema schema({core::Field("d", core::DataType::Date),
+                         core::Field("ts", core::DataType::Timestamp),
+                         core::Field("c", core::DataType::Char)});
+    std::istringstream in("2026-01-02,2026-01-02 03:04:05,a\n2026-02-03,2026-02-03 04:05:06,b");
+    csv::CSVBatchReader reader(in, schema, {});
+
+    auto batch = reader.ReadNext();
+    ASSERT_TRUE(batch);
+    EXPECT_EQ(batch->RowsCount(), 2);
+    EXPECT_EQ(batch->ColumnAt(0).GetAsString(0), "2026-01-02");
+    EXPECT_EQ(batch->ColumnAt(1).GetAsString(0), "2026-01-02 03:04:05");
+    EXPECT_EQ(batch->ColumnAt(2).GetAsString(0), "a");
+    EXPECT_EQ(batch->ColumnAt(0).GetAsString(1), "2026-02-03");
+    EXPECT_EQ(batch->ColumnAt(1).GetAsString(1), "2026-02-03 04:05:06");
+    EXPECT_EQ(batch->ColumnAt(2).GetAsString(1), "b");
+}
+
+TEST(CSVBatchReader, InvalidCharValue) {
+    core::Schema schema({core::Field("c", core::DataType::Char)});
+    std::istringstream in("ab");
+    csv::CSVBatchReader reader(in, schema, {});
+
+    EXPECT_THROW(reader.ReadNext(), std::runtime_error);
 }
 
 TEST(CSVBatchWriter, WriteBatch) {
@@ -359,4 +404,23 @@ TEST(CSVFullInterface, NullAndEmptyString) {
     writer.Flush();
 
     EXPECT_EQ(out.str(), ",\"\"\n\"\",\n1,2\n");
+}
+
+TEST(CSVFullInterface, LogicalAndCharTypes) {
+    core::Schema schema({core::Field("d", core::DataType::Date),
+                         core::Field("ts", core::DataType::Timestamp),
+                         core::Field("c", core::DataType::Char)});
+    std::string str = "2026-01-02,2026-01-02 03:04:05,a\n2026-02-03,2026-02-03 04:05:06,b";
+
+    std::istringstream in(str);
+    csv::CSVBatchReader reader(in, schema, {});
+    auto batch = reader.ReadNext();
+    ASSERT_TRUE(batch);
+
+    std::ostringstream out;
+    csv::CSVBatchWriter writer(out, {});
+    writer.Write(*batch);
+    writer.Flush();
+
+    EXPECT_EQ(out.str(), str + "\n");
 }

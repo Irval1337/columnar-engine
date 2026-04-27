@@ -16,7 +16,7 @@ public:
     StringColumn(bool nullable = false) : offsets_(1, 0), nullable_(nullable) {
     }
 
-    StringColumn(std::vector<char>&& data, std::vector<std::size_t>&& offsets,
+    StringColumn(std::vector<char>&& data, std::vector<size_t>&& offsets,
                  util::BitVector&& is_null, bool nullable)
         : data_(std::move(data)),
           offsets_(std::move(offsets)),
@@ -33,11 +33,11 @@ public:
         return DataType::String;
     }
 
-    std::size_t Size() const override {
+    size_t Size() const override {
         return offsets_.size() - 1;
     }
 
-    void Reserve(std::size_t n) override {
+    void Reserve(size_t n) override {
         offsets_.reserve(n + 1);
         data_.reserve(n * 12);
         if (nullable_) {
@@ -49,7 +49,7 @@ public:
         return nullable_;
     }
 
-    bool IsNull(std::size_t i) const override {
+    bool IsNull(size_t i) const override {
         return nullable_ && is_null_.Get(i);
     }
 
@@ -91,14 +91,14 @@ public:
         return std::string_view(data_.data() + offsets_[i], offsets_[i + 1] - offsets_[i]);
     }
 
-    std::string GetAsString(std::size_t i) const override {
+    std::string GetAsString(size_t i) const override {
         if (IsNull(i)) {
             return "";
         }
         return std::string(data_.data() + offsets_[i], offsets_[i + 1] - offsets_[i]);
     }
 
-    void AppendToString(std::size_t i, std::string& out) const override {
+    void AppendToString(size_t i, std::string& out) const override {
         if (IsNull(i)) {
             return;
         }
@@ -109,7 +109,7 @@ public:
         return data_;
     }
 
-    const std::vector<std::size_t>& GetOffsets() const {
+    const std::vector<size_t>& GetOffsets() const {
         return offsets_;
     }
 
@@ -122,13 +122,13 @@ private:
         if (s.empty()) {
             return;
         }
-        std::size_t pos = data_.size();
+        size_t pos = data_.size();
         data_.resize(pos + s.size());
         std::memcpy(data_.data() + pos, s.data(), s.size());
     }
 
     std::vector<char> data_;
-    std::vector<std::size_t> offsets_;
+    std::vector<size_t> offsets_;
     bool nullable_ = false;
     util::BitVector is_null_;
 };

@@ -15,7 +15,7 @@ public:
     BoolColumn(bool nullable = false) : nullable_(nullable) {
     }
 
-    BoolColumn(util::BitVector&& data, util::BitVector&& is_null, bool nullable, std::size_t size)
+    BoolColumn(util::BitVector&& data, util::BitVector&& is_null, bool nullable, size_t size)
         : data_(std::move(data)), nullable_(nullable), is_null_(std::move(is_null)), size_(size) {
     }
 
@@ -23,11 +23,11 @@ public:
         return DataType::Bool;
     }
 
-    std::size_t Size() const override {
+    size_t Size() const override {
         return size_;
     }
 
-    void Reserve(std::size_t n) override {
+    void Reserve(size_t n) override {
         data_.Reserve(n);
         if (nullable_) {
             is_null_.Reserve(n);
@@ -38,7 +38,7 @@ public:
         return nullable_;
     }
 
-    bool IsNull(std::size_t i) const override {
+    bool IsNull(size_t i) const override {
         return nullable_ && is_null_.Get(i);
     }
 
@@ -77,18 +77,18 @@ public:
         size_ = 0;
     }
 
-    bool Get(std::size_t i) const {
+    bool Get(size_t i) const {
         return data_.Get(i);
     }
 
-    std::string GetAsString(std::size_t i) const override {
+    std::string GetAsString(size_t i) const override {
         if (IsNull(i)) {
             return "";
         }
         return Get(i) ? "true" : "false";
     }
 
-    void AppendToString(std::size_t i, std::string& out) const override {
+    void AppendToString(size_t i, std::string& out) const override {
         if (IsNull(i)) {
             return;
         }
@@ -107,6 +107,6 @@ private:
     util::BitVector data_;
     bool nullable_ = false;
     util::BitVector is_null_;
-    std::size_t size_ = 0;
+    size_t size_ = 0;
 };
 }  // namespace columnar::core

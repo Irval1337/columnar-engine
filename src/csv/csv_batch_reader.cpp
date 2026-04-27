@@ -8,7 +8,7 @@ std::optional<core::Batch> CSVBatchReader::ReadNext() {
 
     auto fields_count = schema_.FieldsCount();
     core::Batch batch(schema_, options_.batch_rows_size);
-    std::size_t rows = 0;
+    size_t rows = 0;
     while (rows < options_.batch_rows_size) {
         auto* row = row_reader_.ReadRowView();
         if (!row) {
@@ -20,7 +20,7 @@ std::optional<core::Batch> CSVBatchReader::ReadNext() {
                                 std::to_string(row->size()));
         }
 
-        for (std::size_t i = 0; i < fields_count; ++i) {
+        for (size_t i = 0; i < fields_count; ++i) {
             const auto& field = (*row)[i];
             auto& col = batch.ColumnAt(i);
             if (field.empty() && !field.was_quoted && col.IsNullable()) {
