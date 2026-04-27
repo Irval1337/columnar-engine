@@ -5,6 +5,8 @@
 #include <core/encoding/dictionary.h>
 #include <core/encoding/frame_of_reference.h>
 #include <core/encoding/rle.h>
+#include <util/byte_buffer.h>
+#include <util/compression.h>
 #include <util/macro.h>
 #include <util/stream_helper.h>
 
@@ -14,10 +16,10 @@
 
 namespace columnar::bruh {
 namespace {
-void WriteBitVector(std::ostream& os, const util::BitVector& bits) {
+void WriteBitVector(util::BufWriter& w, const util::BitVector& bits) {
     size_t packed = core::encoding::BitPackedSize(bits.Size(), 1);
     if (packed > 0) {
-        util::WriteRaw(os, bits.GetData().data(), packed);
+        w.WriteRaw(bits.GetData().data(), packed);
     }
 }
 
@@ -36,46 +38,47 @@ void ValidateSchema(const core::Schema& writer_schema, const core::Schema& batch
 }
 
 template <typename T>
-void WriteOffsets(std::ostream& os, const std::vector<size_t>& offsets) {
+void WriteOffsets(util::BufWriter& w, const std::vector<size_t>& offsets) {
     std::vector<T> out(offsets.begin(), offsets.end());
-    util::WriteArray(os, out);
+    w.WriteArray(out);
 }
 
-void EncodeOffsetsPlain(std::ostream& os, const std::vector<size_t>& offsets, size_t data_size) {
+void EncodeOffsetsPlain(util::BufWriter& w, const std::vector<size_t>& offsets, size_t data_size) {
     if (data_size <= std::numeric_limits<uint32_t>::max()) {
-        util::Write<uint8_t>(os, 4);
-        WriteOffsets<uint32_t>(os, offsets);
+        w.Write<uint8_t>(4);
+        WriteOffsets<uint32_t>(w, offsets);
     } else {
-        util::Write<uint8_t>(os, 8);
-        WriteOffsets<uint64_t>(os, offsets);
+        w.Write<uint8_t>(8);
+        WriteOffsets<uint64_t>(w, offsets);
     }
 }
 
 template <typename ColumnT>
-void EncodeNumeric(std::ostream& os, const core::Column& col, bool nullable,
-                   core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding) {
+void EncodeNumeric(util::BufWriter& w, const core::Column& col, bool nullable,
+                   core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding,
+                   std::vector<uint8_t>& packed_buf) {
     auto& numeric = static_cast<const ColumnT&>(col);
     if (nullable) {
-        WriteBitVector(os, numeric.GetNullMask());
+        WriteBitVector(w, numeric.GetNullMask());
     }
     using ValueT = std::remove_cvref_t<decltype(numeric.GetData())>::value_type;
     switch (encoding) {
         case core::Encoding::Plain:
-            util::WriteArray(os, numeric.GetData());
+            w.WriteArray(numeric.GetData());
             return;
         case core::Encoding::RLE:
-            core::encoding::EncodeRLE<ValueT>(os, numeric.GetData().data(),
+            core::encoding::EncodeRLE<ValueT>(w, numeric.GetData().data(),
                                               numeric.GetData().size());
             return;
         case core::Encoding::FrameOfReference:
             if constexpr (std::is_integral_v<ValueT>) {
                 auto& data = numeric.GetData();
                 if (auto_encoding.has_int_stats) {
-                    core::encoding::EncodeFOR<ValueT>(os, data.data(), data.size(),
-                                                      static_cast<ValueT>(auto_encoding.mn),
-                                                      static_cast<ValueT>(auto_encoding.mx));
+                    core::encoding::EncodeFOR<ValueT>(
+                        w, data.data(), data.size(), static_cast<ValueT>(auto_encoding.mn),
+                        static_cast<ValueT>(auto_encoding.mx), packed_buf);
                 } else {
-                    core::encoding::EncodeFOR<ValueT>(os, data.data(), data.size());
+                    core::encoding::EncodeFOR<ValueT>(w, data.data(), data.size());
                 }
                 return;
             }
@@ -85,10 +88,10 @@ void EncodeNumeric(std::ostream& os, const core::Column& col, bool nullable,
                 auto& data = numeric.GetData();
                 if (auto_encoding.has_int_stats) {
                     core::encoding::EncodeDelta<ValueT>(
-                        os, data.data(), data.size(), static_cast<ValueT>(auto_encoding.min_delta),
-                        static_cast<ValueT>(auto_encoding.max_delta));
+                        w, data.data(), data.size(), static_cast<ValueT>(auto_encoding.min_delta),
+                        static_cast<ValueT>(auto_encoding.max_delta), packed_buf);
                 } else {
-                    core::encoding::EncodeDelta<ValueT>(os, data.data(), data.size());
+                    core::encoding::EncodeDelta<ValueT>(w, data.data(), data.size());
                 }
                 return;
             }
@@ -110,14 +113,15 @@ void EncodeNumeric(std::ostream& os, const core::Column& col, bool nullable,
                 if (bit_width > core::encoding::kBitPackingMaxWidth) {
                     THROW_RUNTIME_ERROR("bit_width is too large");
                 }
-                util::Write<uint8_t>(os, bit_width);
+                w.Write<uint8_t>(bit_width);
                 if (bit_width == 0 || data.empty()) {
                     return;
                 }
-                std::vector<uint8_t> packed(core::encoding::BitPackedSize(data.size(), bit_width));
+                size_t packed_size = core::encoding::BitPackedSize(data.size(), bit_width);
+                packed_buf.resize(packed_size);
                 core::encoding::BitPackWithOffset(data.data(), data.size(), ValueT(0), bit_width,
-                                                  packed.data());
-                util::WriteRaw(os, packed.data(), packed.size());
+                                                  packed_buf.data());
+                w.WriteRaw(packed_buf.data(), packed_size);
                 return;
             }
             THROW_RUNTIME_ERROR("BitPacking needs an integer column");
@@ -126,43 +130,44 @@ void EncodeNumeric(std::ostream& os, const core::Column& col, bool nullable,
     }
 }
 
-void EncodeBool(std::ostream& os, const core::Column& col, bool nullable, core::Encoding encoding) {
+void EncodeBool(util::BufWriter& w, const core::Column& col, bool nullable,
+                core::Encoding encoding) {
     auto& boolcol = static_cast<const core::BoolColumn&>(col);
     if (nullable) {
-        WriteBitVector(os, boolcol.GetNullMask());
+        WriteBitVector(w, boolcol.GetNullMask());
     }
     switch (encoding) {
         case core::Encoding::Plain:
         case core::Encoding::BitPacking:
-            WriteBitVector(os, boolcol.GetData());
+            WriteBitVector(w, boolcol.GetData());
             return;
         case core::Encoding::RLE:
-            core::encoding::EncodeBoolRLE(os, boolcol.GetData(), boolcol.Size());
+            core::encoding::EncodeBoolRLE(w, boolcol.GetData(), boolcol.Size());
             return;
         default:
             THROW_RUNTIME_ERROR("Encoding does not support bool column");
     }
 }
 
-void EncodeString(std::ostream& os, const core::Column& col, bool nullable, core::Encoding encoding,
-                  const core::encoding::AutoEncoding& auto_encoding) {
+void EncodeString(util::BufWriter& w, const core::Column& col, bool nullable,
+                  core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding) {
     auto& stringcol = static_cast<const core::StringColumn&>(col);
     if (nullable) {
-        WriteBitVector(os, stringcol.GetNullMask());
+        WriteBitVector(w, stringcol.GetNullMask());
     }
     switch (encoding) {
         case core::Encoding::Plain: {
             auto& data = stringcol.GetData();
-            EncodeOffsetsPlain(os, stringcol.GetOffsets(), data.size());
-            util::WriteArray(os, data);
+            EncodeOffsetsPlain(w, stringcol.GetOffsets(), data.size());
+            w.WriteArray(data);
             return;
         }
         case core::Encoding::Dictionary:
             if (!auto_encoding.dict_values.empty()) {
-                core::encoding::EncodeStringDictionary(os, auto_encoding.dict_values,
+                core::encoding::EncodeStringDictionary(w, auto_encoding.dict_values,
                                                        auto_encoding.dict_indexes);
             } else {
-                core::encoding::EncodeStringDictionary(os, stringcol.GetData(),
+                core::encoding::EncodeStringDictionary(w, stringcol.GetData(),
                                                        stringcol.GetOffsets());
             }
             return;
@@ -171,46 +176,52 @@ void EncodeString(std::ostream& os, const core::Column& col, bool nullable, core
     }
 }
 
-void EncodeChar(std::ostream& os, const core::Column& col, bool nullable, core::Encoding encoding) {
+void EncodeChar(util::BufWriter& w, const core::Column& col, bool nullable,
+                core::Encoding encoding) {
     auto& charcol = static_cast<const core::CharColumn&>(col);
     if (nullable) {
-        WriteBitVector(os, charcol.GetNullMask());
+        WriteBitVector(w, charcol.GetNullMask());
     }
     switch (encoding) {
         case core::Encoding::Plain:
-            util::WriteArray(os, charcol.GetData());
+            w.WriteArray(charcol.GetData());
             return;
         case core::Encoding::RLE:
-            core::encoding::EncodeRLE<char>(os, charcol.GetData().data(), charcol.GetData().size());
+            core::encoding::EncodeRLE<char>(w, charcol.GetData().data(), charcol.GetData().size());
             return;
         default:
             THROW_RUNTIME_ERROR("Encoding does not support char column");
     }
 }
 
-void EncodeColumn(std::ostream& os, const core::Column& col, const core::Field& field,
-                  core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding) {
+void EncodeColumn(util::BufWriter& w, const core::Column& col, const core::Field& field,
+                  core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding,
+                  std::vector<uint8_t>& packed_buf) {
     switch (core::DataTypeToPhysical(field.type)) {
         case core::PhysicalType::Int16:
-            EncodeNumeric<core::Int16Column>(os, col, field.nullable, encoding, auto_encoding);
+            EncodeNumeric<core::Int16Column>(w, col, field.nullable, encoding, auto_encoding,
+                                             packed_buf);
             return;
         case core::PhysicalType::Int32:
-            EncodeNumeric<core::Int32Column>(os, col, field.nullable, encoding, auto_encoding);
+            EncodeNumeric<core::Int32Column>(w, col, field.nullable, encoding, auto_encoding,
+                                             packed_buf);
             return;
         case core::PhysicalType::Int64:
-            EncodeNumeric<core::Int64Column>(os, col, field.nullable, encoding, auto_encoding);
+            EncodeNumeric<core::Int64Column>(w, col, field.nullable, encoding, auto_encoding,
+                                             packed_buf);
             return;
         case core::PhysicalType::Double:
-            EncodeNumeric<core::DoubleColumn>(os, col, field.nullable, encoding, auto_encoding);
+            EncodeNumeric<core::DoubleColumn>(w, col, field.nullable, encoding, auto_encoding,
+                                              packed_buf);
             return;
         case core::PhysicalType::Bool:
-            EncodeBool(os, col, field.nullable, encoding);
+            EncodeBool(w, col, field.nullable, encoding);
             return;
         case core::PhysicalType::String:
-            EncodeString(os, col, field.nullable, encoding, auto_encoding);
+            EncodeString(w, col, field.nullable, encoding, auto_encoding);
             return;
         case core::PhysicalType::Char:
-            EncodeChar(os, col, field.nullable, encoding);
+            EncodeChar(w, col, field.nullable, encoding);
             return;
     }
     THROW_RUNTIME_ERROR("Unsupported type");
@@ -228,7 +239,7 @@ void BruhBatchWriter::Write(const core::Batch& batch) {
         ColumnChunkMetaData chunk;
         chunk.values_count = batch.RowsCount();
         WriteColumn(chunk, batch.ColumnAt(col), schema_.GetFields()[col], col);
-        group.byte_size += chunk.byte_size;
+        group.byte_size += chunk.compressed_size;
         group.columns.push_back(chunk);
     }
     metadata_.row_groups.push_back(std::move(group));
@@ -236,23 +247,44 @@ void BruhBatchWriter::Write(const core::Batch& batch) {
 
 void BruhBatchWriter::WriteColumn(ColumnChunkMetaData& chunk, const core::Column& col,
                                   const core::Field& field, size_t col_index) {
-    core::encoding::AutoEncoding auto_encoding;
-    core::Encoding encoding;
-
-    auto it = options_.per_column.find(col_index);
-    if (it != options_.per_column.end()) {
+    core::Encoding encoding = options_.encoding;
+    if (auto it = options_.column_encoding.find(col_index); it != options_.column_encoding.end()) {
         encoding = it->second;
-    } else if (options_.force_encoding.has_value()) {
-        encoding = *options_.force_encoding;
-    } else {
+    }
+    core::encoding::AutoEncoding auto_encoding;
+    if (encoding == core::Encoding::Auto) {
         auto_encoding = core::encoding::SelectEncoding(col, field);
         encoding = auto_encoding.encoding;
     }
 
+    util::Compression compression = options_.compression;
+    if (auto it = options_.column_compression.find(col_index);
+        it != options_.column_compression.end()) {
+        compression = it->second;
+    }
+
+    encode_buf_.clear();
+    util::BufWriter encode_writer(encode_buf_);
+    EncodeColumn(encode_writer, col, field, encoding, auto_encoding, packed_buf_);
+
+    const uint8_t* out = encode_buf_.data();
+    size_t out_size = encode_buf_.size();
+    chunk.compression = util::Compression::None;
+    if (compression != util::Compression::None) {
+        compress_buf_.clear();
+        util::Compress(compression, encode_buf_.data(), encode_buf_.size(), compress_buf_);
+        if (compress_buf_.size() < encode_buf_.size()) {
+            out = compress_buf_.data();
+            out_size = compress_buf_.size();
+            chunk.compression = compression;
+        }
+    }
+
     chunk.encoding = encoding;
+    chunk.uncompressed_size = encode_buf_.size();
     chunk.offset = static_cast<uint64_t>(os_.tellp());
-    EncodeColumn(os_, col, field, encoding, auto_encoding);
-    chunk.byte_size = static_cast<uint64_t>(os_.tellp()) - chunk.offset;
+    chunk.compressed_size = out_size;
+    util::WriteRaw(os_, out, out_size);
 }
 
 void BruhBatchWriter::Flush() {
@@ -288,9 +320,11 @@ void BruhBatchWriter::WriteRowGroups() {
         util::Write<uint64_t>(os_, group.byte_size);
         for (auto& chunk : group.columns) {
             util::Write<uint64_t>(os_, chunk.offset);
-            util::Write<uint64_t>(os_, chunk.byte_size);
+            util::Write<uint64_t>(os_, chunk.compressed_size);
+            util::Write<uint64_t>(os_, chunk.uncompressed_size);
             util::Write<uint64_t>(os_, chunk.values_count);
             util::Write<uint8_t>(os_, static_cast<uint8_t>(chunk.encoding));
+            util::Write<uint8_t>(os_, static_cast<uint8_t>(chunk.compression));
         }
     }
 }

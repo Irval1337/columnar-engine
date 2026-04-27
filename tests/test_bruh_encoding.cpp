@@ -18,7 +18,7 @@ namespace {
 void WriteDictString(std::stringstream& ss, const core::Schema& schema,
                      const std::vector<std::string>& values, const std::vector<bool>& is_null) {
     bruh::BruhWriterOptions opts;
-    opts.force_encoding = core::Encoding::Dictionary;
+    opts.encoding = core::Encoding::Dictionary;
     bruh::BruhBatchWriter writer(ss, schema, opts);
     core::Batch batch(schema);
     for (size_t i = 0; i < values.size(); ++i) {
@@ -35,7 +35,7 @@ void WriteDictString(std::stringstream& ss, const core::Schema& schema,
 void WriteNumericWith(std::stringstream& ss, const core::Schema& schema,
                       const std::vector<int64_t>& values, core::Encoding encoding) {
     bruh::BruhWriterOptions opts;
-    opts.force_encoding = encoding;
+    opts.encoding = encoding;
     bruh::BruhBatchWriter writer(ss, schema, opts);
     core::Batch batch(schema);
     for (auto v : values) {
@@ -119,7 +119,7 @@ TEST(BruhDictionary, ShrinksForRepetitiveData) {
     std::stringstream plain_ss(std::ios::in | std::ios::out | std::ios::binary);
     {
         bruh::BruhWriterOptions opts;
-        opts.force_encoding = core::Encoding::Plain;
+        opts.encoding = core::Encoding::Plain;
         bruh::BruhBatchWriter writer(plain_ss, schema, opts);
         core::Batch batch(schema);
         for (auto& v : values) {
@@ -139,7 +139,7 @@ TEST(BruhDictionary, ThrowsWhenCardinalityExceedsLimit) {
     core::Schema schema({core::Field("s", core::DataType::String)});
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
     bruh::BruhWriterOptions opts;
-    opts.force_encoding = core::Encoding::Dictionary;
+    opts.encoding = core::Encoding::Dictionary;
     bruh::BruhBatchWriter writer(ss, schema, opts);
     core::Batch batch(schema);
     for (size_t i = 0; i < 65540; ++i) {
@@ -162,7 +162,7 @@ TEST(BruhRLE, Int64RunsRoundTrip) {
 
     {
         bruh::BruhWriterOptions opts;
-        opts.force_encoding = core::Encoding::RLE;
+        opts.encoding = core::Encoding::RLE;
         bruh::BruhBatchWriter writer(ss, schema, opts);
         core::Batch batch(schema);
         for (size_t i = 0; i < values.size(); ++i) {
@@ -204,7 +204,7 @@ TEST(BruhRLE, BoolRoundTrip) {
 
     {
         bruh::BruhWriterOptions opts;
-        opts.force_encoding = core::Encoding::RLE;
+        opts.encoding = core::Encoding::RLE;
         bruh::BruhBatchWriter writer(ss, schema, opts);
         core::Batch batch(schema);
         for (auto v : values) {
@@ -233,7 +233,7 @@ TEST(BruhRLE, CharRoundTrip) {
 
     {
         bruh::BruhWriterOptions opts;
-        opts.force_encoding = core::Encoding::RLE;
+        opts.encoding = core::Encoding::RLE;
         bruh::BruhBatchWriter writer(ss, schema, opts);
         core::Batch batch(schema);
         for (char c : values) {
@@ -258,7 +258,7 @@ TEST(BruhRLE, ShrinksForRepetitiveIntegers) {
     std::stringstream plain_ss(std::ios::in | std::ios::out | std::ios::binary);
     {
         bruh::BruhWriterOptions opts;
-        opts.force_encoding = core::Encoding::Plain;
+        opts.encoding = core::Encoding::Plain;
         bruh::BruhBatchWriter writer(plain_ss, schema, opts);
         core::Batch batch(schema);
         for (size_t i = 0; i < 5000; ++i) {
@@ -271,7 +271,7 @@ TEST(BruhRLE, ShrinksForRepetitiveIntegers) {
     std::stringstream rle_ss(std::ios::in | std::ios::out | std::ios::binary);
     {
         bruh::BruhWriterOptions opts;
-        opts.force_encoding = core::Encoding::RLE;
+        opts.encoding = core::Encoding::RLE;
         bruh::BruhBatchWriter writer(rle_ss, schema, opts);
         core::Batch batch(schema);
         for (size_t i = 0; i < 5000; ++i) {
@@ -347,7 +347,7 @@ TEST(BruhFOR, DateRoundTrip) {
     core::Schema schema({core::Field("d", core::DataType::Date)});
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
     bruh::BruhWriterOptions opts;
-    opts.force_encoding = core::Encoding::FrameOfReference;
+    opts.encoding = core::Encoding::FrameOfReference;
     bruh::BruhBatchWriter writer(ss, schema, opts);
     core::Batch batch(schema);
     for (size_t i = 0; i < 500; ++i) {
@@ -395,7 +395,7 @@ TEST(BruhBitPacking, BoolRoundTrip) {
 
     {
         bruh::BruhWriterOptions opts;
-        opts.force_encoding = core::Encoding::BitPacking;
+        opts.encoding = core::Encoding::BitPacking;
         bruh::BruhBatchWriter writer(ss, schema, opts);
         core::Batch batch(schema);
         for (auto v : values) {
@@ -419,7 +419,7 @@ TEST(BruhBitPacking, RejectsNegativeValues) {
     core::Schema schema({core::Field("x", core::DataType::Int32)});
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
     bruh::BruhWriterOptions opts;
-    opts.force_encoding = core::Encoding::BitPacking;
+    opts.encoding = core::Encoding::BitPacking;
     bruh::BruhBatchWriter writer(ss, schema, opts);
     core::Batch batch(schema);
     batch.ColumnAt(0).AppendFromString("1");
@@ -477,7 +477,7 @@ TEST(BruhDelta, TimestampRoundTrip) {
     core::Schema schema({core::Field("ts", core::DataType::Timestamp)});
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
     bruh::BruhWriterOptions opts;
-    opts.force_encoding = core::Encoding::Delta;
+    opts.encoding = core::Encoding::Delta;
     bruh::BruhBatchWriter writer(ss, schema, opts);
     core::Batch batch(schema);
     std::vector<std::string> stamps;
@@ -502,15 +502,16 @@ TEST(BruhDelta, TimestampRoundTrip) {
 }
 
 TEST(BruhDelta, EmptyPayloadHasNoExtraBytes) {
-    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    std::vector<uint8_t> buf;
+    util::BufWriter w(buf);
     std::vector<int64_t> values;
-    core::encoding::EncodeDelta<int64_t>(ss, values.data(), values.size());
+    core::encoding::EncodeDelta<int64_t>(w, values.data(), values.size());
 
-    EXPECT_EQ(ss.tellp(), static_cast<std::streamoff>(sizeof(int64_t)));
-    ss.seekg(0);
-    auto out = core::encoding::DecodeDelta<int64_t>(ss, 0);
+    EXPECT_EQ(buf.size(), sizeof(int64_t));
+    util::BufReader r(buf.data(), buf.size());
+    auto out = core::encoding::DecodeDelta<int64_t>(r, 0);
     EXPECT_TRUE(out.empty());
-    EXPECT_EQ(ss.tellg(), static_cast<std::streamoff>(sizeof(int64_t)));
+    EXPECT_EQ(r.Remaining(), 0u);
 }
 
 TEST(BruhAutoSelect, LowCardinalityStringsPicksDictionary) {

@@ -3,6 +3,7 @@
 #include <core/datatype.h>
 #include <core/encoding.h>
 #include <core/schema.h>
+#include <util/compression.h>
 
 #include <cstdint>
 #include <vector>
@@ -17,13 +18,15 @@
 // My amazing DB uses ONLY little-endian bytes ordering
 namespace columnar::bruh {
 constexpr uint8_t kMagicBytes[8] = {'B', 'R', 'U', 'H', 'D', 'B', 0x67, 0x67};
-constexpr int kCurrentVersion = 4;
+constexpr int kCurrentVersion = 5;
 
 struct ColumnChunkMetaData {
     uint64_t offset;
-    uint64_t byte_size;
+    uint64_t compressed_size;
+    uint64_t uncompressed_size;
     uint64_t values_count;
     core::Encoding encoding;
+    util::Compression compression;
 };
 
 struct RowGroupMetaData {

@@ -9,8 +9,7 @@ public:
     BitVector() : size_(0) {
     }
 
-    BitVector(std::vector<uint64_t>&& data, size_t size)
-        : size_(size), bits_(std::move(data)) {
+    BitVector(std::vector<uint64_t>&& data, size_t size) : size_(size), bits_(std::move(data)) {
     }
 
     BitVector(size_t size) {
@@ -22,6 +21,27 @@ public:
 
     void Set(size_t i) {
         bits_[i / 64] |= static_cast<uint64_t>(1) << (i % 64);
+    }
+
+    void SetRange(size_t pos, size_t len) {
+        if (len == 0) {
+            return;
+        }
+        size_t head_word = pos / 64;
+        size_t tail_word = (pos + len) / 64;
+        uint64_t ones = -1;
+        if (head_word == tail_word) {
+            uint64_t mask = (ones << (pos % 64)) & (ones >> (64 - (pos + len) % 64));
+            bits_[head_word] |= mask;
+            return;
+        }
+        bits_[head_word] |= ones << (pos % 64);
+        for (size_t w = head_word + 1; w < tail_word; ++w) {
+            bits_[w] = ones;
+        }
+        if ((pos + len) % 64 > 0) {
+            bits_[tail_word] |= ones >> (64 - (pos + len) % 64);
+        }
     }
 
     void PushBack(bool value) {

@@ -3,17 +3,21 @@
 #include <bruh/format.h>
 #include <core/batch_writer.h>
 #include <core/encoding.h>
+#include <util/compression.h>
 #include <util/macro.h>
 
-#include <optional>
+#include <cstdint>
 #include <ostream>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace columnar::bruh {
 struct BruhWriterOptions {
-    std::optional<core::Encoding> force_encoding;
-    std::unordered_map<size_t, core::Encoding> per_column;
+    util::Compression compression = util::Compression::Lz4;
+    core::Encoding encoding = core::Encoding::Auto;
+    std::unordered_map<size_t, core::Encoding> column_encoding;
+    std::unordered_map<size_t, util::Compression> column_compression;
 };
 
 class BruhBatchWriter final : public core::BatchWriter {
@@ -45,5 +49,8 @@ private:
     core::Schema schema_;
     BruhWriterOptions options_;
     FileMetaData metadata_;
+    std::vector<uint8_t> packed_buf_;
+    std::vector<uint8_t> encode_buf_;
+    std::vector<uint8_t> compress_buf_;
 };
 }  // namespace columnar::bruh

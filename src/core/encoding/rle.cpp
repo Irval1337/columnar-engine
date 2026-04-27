@@ -1,7 +1,7 @@
 #include <core/encoding/rle.h>
 
 namespace columnar::core::encoding {
-void EncodeBoolRLE(std::ostream& os, const util::BitVector& bits, size_t n) {
+void EncodeBoolRLE(util::BufWriter& w, const util::BitVector& bits, size_t n) {
     std::vector<Run<uint8_t>> runs;
     for (size_t i = 0; i < n;) {
         bool v = bits.Get(i);
@@ -9,30 +9,28 @@ void EncodeBoolRLE(std::ostream& os, const util::BitVector& bits, size_t n) {
         while (j < n && bits.Get(j) == v) {
             ++j;
         }
-        runs.push_back({static_cast<uint32_t>(j - i), v ? uint8_t{1} : uint8_t{0}});
+        runs.push_back({static_cast<uint32_t>(j - i), static_cast<uint8_t>(v)});
         i = j;
     }
-    util::Write<uint32_t>(os, runs.size());
+    w.Write<uint32_t>(runs.size());
     for (auto& run : runs) {
-        util::Write<uint32_t>(os, run.len);
-        util::Write<uint8_t>(os, run.value);
+        w.Write<uint32_t>(run.len);
+        w.Write<uint8_t>(run.value);
     }
 }
 
-util::BitVector DecodeBoolRLE(std::istream& is, size_t n) {
-    auto run_count = util::Read<uint32_t>(is);
+util::BitVector DecodeBoolRLE(util::BufReader& r, size_t n) {
+    auto run_count = r.Read<uint32_t>();
     util::BitVector bits(n);
     size_t pos = 0;
-    for (uint32_t r = 0; r < run_count; ++r) {
-        auto len = util::Read<uint32_t>(is);
-        bool val = util::Read<uint8_t>(is) != 0;
+    for (uint32_t i = 0; i < run_count; ++i) {
+        auto len = r.Read<uint32_t>();
+        bool val = r.Read<uint8_t>() != 0;
         if (pos + len > n) {
             THROW_RUNTIME_ERROR("RLE run length invalid");
         }
         if (val) {
-            for (uint32_t k = 0; k < len; ++k) {
-                bits.Set(pos + k);
-            }
+            bits.SetRange(pos, len);
         }
         pos += len;
     }

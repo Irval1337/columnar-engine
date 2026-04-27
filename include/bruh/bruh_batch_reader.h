@@ -2,10 +2,10 @@
 
 #include <core/batch_reader.h>
 #include <bruh/format.h>
+#include <util/byte_buffer.h>
 #include <util/macro.h>
 
 #include <cstdint>
-#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -47,12 +47,14 @@ private:
 
     void ReadRowGroupsMetadata(uint32_t cols_count);
 
-    void ReadColumn(std::unique_ptr<core::Column>& col, const core::Field& field,
-                    const ColumnChunkMetaData& chunk);
+    void ReadColumn(util::BufReader& r, std::unique_ptr<core::Column>& col,
+                    const core::Field& field, const ColumnChunkMetaData& chunk);
 
     std::istream& is_;
     FileMetaData metadata_;
     size_t curr_row_group_;
     std::vector<uint8_t> packed_buf_;
+    std::vector<uint8_t> compress_buf_;
+    std::vector<uint8_t> encode_buf_;
 };
 }  // namespace columnar::bruh
