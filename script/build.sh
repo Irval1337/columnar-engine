@@ -52,7 +52,7 @@ if ! cmake "${cmake_args[@]}"; then
   cmake "${cmake_args[@]}"
 fi
 
-echo "[build] build converter"
-cmake --build "${BUILD_DIR}" --target converter -j
+echo "[build] build converter and clickbench_runner"
+cmake --build "${BUILD_DIR}" --target converter clickbench_runner -j
 
-echo "[build] done: ${BUILD_DIR}/apps/converter/converter"
+echo "[build] done: ${BUILD_DIR}"

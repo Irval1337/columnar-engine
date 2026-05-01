@@ -49,4 +49,4 @@ build_*/
 .deps/
 .fetchcontent/
 .ccache/
-clickbench/
+/clickbench/
