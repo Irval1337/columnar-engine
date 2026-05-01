@@ -136,8 +136,17 @@ jobs:
           INPUT_DIR="${GITHUB_WORKSPACE}/.ci-input"
           RESULTS_DIR="${GITHUB_WORKSPACE}/.ci-results"
           BENCH_BRANCH="ci-benchmark-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          DATASET_NAME="reduced-clickbench-v1"
+          DATASET_REPO="Irval1337/columnar-bench-data"
+          DATASET_TAG="reduced-clickbench-v1"
+          DATASET_URL="https://github.com/${DATASET_REPO}/releases/download/${DATASET_TAG}"
 
           mkdir -p "${HARNESS}/scripts" "${INPUT_DIR}" "${RESULTS_DIR}"
+
+          if ! command -v zstd >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y zstd
+          fi
 
           curl -fsSL \
             https://raw.githubusercontent.com/gmusya/clmnr-ngn/c7cf6827e0f3edf1f46580e137a2ac94619dda82/script/Dockerfile \
@@ -152,31 +161,20 @@ jobs:
           cat > "${HARNESS}/scripts/env.sh" <<EOF
           export BRANCH="${BENCH_BRANCH}"
           export REPO_URL="file:///source"
-          export INPUT_CSV="/input/hits.csv"
+          export INPUT_CSV="/input/${DATASET_NAME}/data.csv"
           export COLUMNAR="/results/hits.bruh"
           export RESULTS="/results"
           EOF
 
-          awk -F, '
-            BEGIN { ORS = "" }
-            {
-              if (NR > 1) {
-                printf ","
-              }
-              if ($2 == "string") {
-                printf "\"\""
-              } else if ($2 == "date") {
-                printf "2013-07-15"
-              } else if ($2 == "timestamp") {
-                printf "\"2013-07-15 10:47:34\""
-              } else if ($2 == "char") {
-                printf "x"
-              } else {
-                printf "0"
-              }
-            }
-            END { printf "\n" }
-          ' script/hits.schema.csv > "${INPUT_DIR}/hits.csv"
+          curl -fsSL -o "${INPUT_DIR}/${DATASET_NAME}.tar.zst" \
+            "${DATASET_URL}/${DATASET_NAME}.tar.zst"
+          curl -fsSL -o "${INPUT_DIR}/${DATASET_NAME}.sha256" \
+            "${DATASET_URL}/${DATASET_NAME}.sha256"
+          (
+            cd "${INPUT_DIR}"
+            sha256sum -c "${DATASET_NAME}.sha256"
+            tar --zstd -xf "${DATASET_NAME}.tar.zst"
+          )
 
           echo "HARNESS=${HARNESS}" >> "${GITHUB_ENV}"
           echo "INPUT_DIR=${INPUT_DIR}" >> "${GITHUB_ENV}"
