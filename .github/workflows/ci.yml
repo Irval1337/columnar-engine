@@ -134,7 +134,7 @@ jobs:
 
           HARNESS="${RUNNER_TEMP}/advisor-harness"
           INPUT_DIR="${GITHUB_WORKSPACE}/.ci-input"
-          RESULTS_DIR="${GITHUB_WORKSPACE}/.ci-results"
+          RESULTS_DIR="${GITHUB_WORKSPACE}/ci-results"
           BENCH_BRANCH="ci-benchmark-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           DATASET_NAME="reduced-clickbench-v1"
           DATASET_REPO="Irval1337/columnar-bench-data"
@@ -196,9 +196,15 @@ jobs:
             columnar-advisor-benchmark \
             -lc 'git config --global --add safe.directory /source && git config --global --add safe.directory /source/.git && /bench/commands.sh'
 
+      - name: Show benchmark results
+        if: always()
+        shell: bash
+        run: |
+          find "${RESULTS_DIR}" -maxdepth 1 -type f -printf "%f %s bytes\n" | sort || true
+
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: advisor-benchmark-results
-          path: .ci-results
+          path: ci-results
