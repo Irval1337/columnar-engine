@@ -192,16 +192,11 @@ jobs:
           docker run --rm \
             --entrypoint bash \
             --workdir /bench \
-            --env GIT_CONFIG_COUNT=2 \
-            --env GIT_CONFIG_KEY_0=safe.directory \
-            --env GIT_CONFIG_VALUE_0=/source \
-            --env GIT_CONFIG_KEY_1=safe.directory \
-            --env GIT_CONFIG_VALUE_1=/source/.git \
             --volume "${GITHUB_WORKSPACE}:/source:ro" \
             --volume "${INPUT_DIR}:/input:ro" \
             --volume "${RESULTS_DIR}:/results" \
             columnar-advisor-benchmark \
-            /bench/commands.sh
+            -lc 'git config --global --add safe.directory /source && git config --global --add safe.directory /source/.git && /bench/commands.sh'
 
       - name: Upload benchmark results
         if: always()
