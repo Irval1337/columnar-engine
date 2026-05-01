@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 // (@Irval1337) TODO: Maybe implement file io using mmap?
@@ -24,7 +25,24 @@ public:
         return ReadRowGroup(curr_row_group_++);
     }
 
+    std::optional<core::Batch> ReadNext(const std::vector<size_t>& column_indexes) {
+        if (curr_row_group_ >= metadata_.row_groups.size()) {
+            return std::nullopt;
+        }
+        return ReadRowGroup(curr_row_group_++, column_indexes);
+    }
+
     core::Batch ReadRowGroup(size_t i);
+
+    core::Batch ReadRowGroup(size_t i, const std::vector<size_t>& column_indexes);
+
+    core::Batch ReadRowGroup(size_t i, const std::vector<std::string>& column_names) {
+        return ReadRowGroup(i, ResolveColumnNames(column_names));
+    }
+
+    std::vector<size_t> ResolveColumnNames(const std::vector<std::string>& column_names) const;
+
+    core::Schema ProjectSchema(const std::vector<size_t>& column_indexes) const;
 
     size_t NumRowGroups() const {
         return metadata_.row_groups.size();

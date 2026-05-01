@@ -71,6 +71,20 @@ public:
         return size_;
     }
 
+    size_t PopCount() const {
+        size_t count = 0;
+        size_t full_words = size_ / 64;
+        for (size_t w = 0; w < full_words; ++w) {
+            count += __builtin_popcountll(bits_[w]);
+        }
+        size_t tail = size_ % 64;
+        if (tail != 0) {
+            uint64_t mask = (static_cast<uint64_t>(1) << tail) - 1;
+            count += __builtin_popcountll(bits_[full_words] & mask);
+        }
+        return count;
+    }
+
     const std::vector<uint64_t>& GetData() const {
         return bits_;
     }

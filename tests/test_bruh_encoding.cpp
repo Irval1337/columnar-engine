@@ -32,7 +32,7 @@ void WriteDictString(std::stringstream& ss, const core::Schema& schema,
     writer.Flush();
 }
 
-void WriteNumericWith(std::stringstream& ss, const core::Schema& schema,
+void WriteNumericVals(std::stringstream& ss, const core::Schema& schema,
                       const std::vector<int64_t>& values, core::Encoding encoding) {
     bruh::BruhWriterOptions opts;
     opts.encoding = encoding;
@@ -67,7 +67,7 @@ TEST(BruhDictionary, StringLowCardinalityRoundTrip) {
     EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].encoding, core::Encoding::Dictionary);
 }
 
-TEST(BruhDictionary, StringHighCardinalityUsesUint16Indices) {
+TEST(BruhDictionary, StringHighCardinalityUsesUint16indexes) {
     core::Schema schema({core::Field("tag", core::DataType::String)});
     std::vector<std::string> values;
     for (size_t i = 0; i < 1000; ++i) {
@@ -292,7 +292,7 @@ TEST(BruhFOR, Int32NarrowRangeRoundTrip) {
     }
 
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
-    WriteNumericWith(ss, schema, values, core::Encoding::FrameOfReference);
+    WriteNumericVals(ss, schema, values, core::Encoding::FrameOfReference);
 
     ss.seekg(0);
     bruh::BruhBatchReader reader(ss);
@@ -310,10 +310,10 @@ TEST(BruhFOR, Int64ConstantOptimum) {
     std::vector<int64_t> values(5000, -12345);
 
     std::stringstream plain_ss(std::ios::in | std::ios::out | std::ios::binary);
-    WriteNumericWith(plain_ss, schema, values, core::Encoding::Plain);
+    WriteNumericVals(plain_ss, schema, values, core::Encoding::Plain);
 
     std::stringstream for_ss(std::ios::in | std::ios::out | std::ios::binary);
-    WriteNumericWith(for_ss, schema, values, core::Encoding::FrameOfReference);
+    WriteNumericVals(for_ss, schema, values, core::Encoding::FrameOfReference);
 
     EXPECT_LT(for_ss.str().size(), plain_ss.str().size());
 
@@ -333,7 +333,7 @@ TEST(BruhFOR, Int64NegativeRangeRoundTrip) {
     }
 
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
-    WriteNumericWith(ss, schema, values, core::Encoding::FrameOfReference);
+    WriteNumericVals(ss, schema, values, core::Encoding::FrameOfReference);
 
     ss.seekg(0);
     bruh::BruhBatchReader reader(ss);
@@ -373,7 +373,7 @@ TEST(BruhBitPacking, Int32UnsignedRoundTrip) {
     }
 
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
-    WriteNumericWith(ss, schema, values, core::Encoding::BitPacking);
+    WriteNumericVals(ss, schema, values, core::Encoding::BitPacking);
 
     ss.seekg(0);
     bruh::BruhBatchReader reader(ss);
@@ -435,10 +435,10 @@ TEST(BruhDelta, Int64SortedRoundTrip) {
     }
 
     std::stringstream plain_ss(std::ios::in | std::ios::out | std::ios::binary);
-    WriteNumericWith(plain_ss, schema, values, core::Encoding::Plain);
+    WriteNumericVals(plain_ss, schema, values, core::Encoding::Plain);
 
     std::stringstream delta_ss(std::ios::in | std::ios::out | std::ios::binary);
-    WriteNumericWith(delta_ss, schema, values, core::Encoding::Delta);
+    WriteNumericVals(delta_ss, schema, values, core::Encoding::Delta);
 
     EXPECT_LT(delta_ss.str().size(), plain_ss.str().size());
 
@@ -463,7 +463,7 @@ TEST(BruhDelta, Int32NonMonotonicRoundTrip) {
     }
 
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
-    WriteNumericWith(ss, schema, values, core::Encoding::Delta);
+    WriteNumericVals(ss, schema, values, core::Encoding::Delta);
 
     ss.seekg(0);
     bruh::BruhBatchReader reader(ss);

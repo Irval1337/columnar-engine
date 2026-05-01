@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
+#include <vector>
 
 namespace columnar::bruh {
 namespace {
@@ -166,15 +167,28 @@ std::unique_ptr<core::Column> DecodeChar(util::BufReader& r, bool nullable, core
 }  // namespace
 
 core::Batch BruhBatchReader::ReadRowGroup(size_t i) {
+    std::vector<size_t> column_indexes(metadata_.schema.FieldsCount());
+    for (size_t col = 0; col < column_indexes.size(); ++col) {
+        column_indexes[col] = col;
+    }
+    return ReadRowGroup(i, column_indexes);
+}
+
+core::Batch BruhBatchReader::ReadRowGroup(size_t i, const std::vector<size_t>& column_indexes) {
     if (i >= metadata_.row_groups.size()) {
         THROW_RUNTIME_ERROR("Row group index out of range");
     }
 
     auto& group = metadata_.row_groups[i];
     auto& schema = metadata_.schema;
-    core::Batch batch(metadata_.schema, group.rows_count);
+    core::Batch batch(ProjectSchema(column_indexes), group.rows_count);
     auto& columns = batch.GetColumns();
-    for (size_t col = 0; col < schema.FieldsCount(); ++col) {
+
+    for (size_t out_col = 0; out_col < column_indexes.size(); ++out_col) {
+        size_t col = column_indexes[out_col];
+        if (col >= schema.FieldsCount()) {
+            THROW_RUNTIME_ERROR("Column index out of range");
+        }
         auto& chunk = group.columns[col];
         if (is_.tellg() != static_cast<std::streamoff>(chunk.offset)) {
             is_.seekg(chunk.offset);
@@ -189,9 +203,32 @@ core::Batch BruhBatchReader::ReadRowGroup(size_t i) {
                              encode_buf_.data(), chunk.uncompressed_size);
         }
         util::BufReader r(encode_buf_.data(), encode_buf_.size());
-        ReadColumn(r, columns[col], schema.GetFields()[col], chunk);
+        ReadColumn(r, columns[out_col], schema.GetFields()[col], chunk);
     }
     return batch;
+}
+
+std::vector<size_t> BruhBatchReader::ResolveColumnNames(
+    const std::vector<std::string>& column_names) const {
+    std::vector<size_t> column_indexes;
+    column_indexes.reserve(column_names.size());
+    for (auto& column : column_names) {
+        column_indexes.push_back(metadata_.schema.GetIndex(column));
+    }
+    return column_indexes;
+}
+
+core::Schema BruhBatchReader::ProjectSchema(const std::vector<size_t>& column_indexes) const {
+    std::vector<core::Field> fields;
+    fields.reserve(column_indexes.size());
+    auto& schema_fields = metadata_.schema.GetFields();
+    for (size_t col : column_indexes) {
+        if (col >= schema_fields.size()) {
+            THROW_RUNTIME_ERROR("Column index out of range");
+        }
+        fields.push_back(schema_fields[col]);
+    }
+    return core::Schema(std::move(fields));
 }
 
 void BruhBatchReader::ReadMetaData() {
