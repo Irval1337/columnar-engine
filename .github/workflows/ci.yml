@@ -178,8 +178,8 @@ jobs:
             tar --zstd -xf "${DATASET_NAME}.tar.zst"
           )
 
-          # Expected results (per-query CSVs + reference query_times.csv).
-          # Best-effort: if missing on the release, CI continues without WA verdicts.
+          # Expected per-query CSV answers used for AC/WA verification.
+          # Best-effort: if missing on the release, CI continues without verdicts.
           if curl -fsSL -o "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst" \
                 "${DATASET_URL}/${EXPECTED_ARCHIVE}.tar.zst" \
              && curl -fsSL -o "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst.sha256" \
@@ -222,63 +222,68 @@ jobs:
         run: |
           find "${RESULTS_DIR}" -maxdepth 2 -printf "%P %s bytes\n" | sort || true
 
-      - name: Inject advisor reference run
+      - name: Build answers summary
         if: always()
         shell: bash
         run: |
           set -euo pipefail
 
-          REF_SRC="${GITHUB_WORKSPACE}/expected-results/reduced-clickbench-v1"
-          REF_DST="${RESULTS_DIR}/gmusya/reference"
-
-          if [[ ! -f "${REF_SRC}/query_times.csv" ]]; then
-            echo "No reference query_times.csv at ${REF_SRC}; skipping injection."
-            exit 0
-          fi
-
-          mkdir -p "${REF_DST}"
-          cp "${REF_SRC}/query_times.csv" "${REF_DST}/query_times.csv"
-          # Copy result CSVs so the WA-check sees identical files for the reference run.
-          for f in "${REF_SRC}"/query_*.csv; do
-            cp "${f}" "${REF_DST}/"
-          done
-
-      - name: Build summary table
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ ! -d "${RESULTS_DIR}" ]] || ! find "${RESULTS_DIR}" -name 'query_times.csv' -print -quit | grep -q .; then
-            echo "No query_times.csv produced; skipping summary." | tee -a "${GITHUB_STEP_SUMMARY}"
-            exit 0
-          fi
-
-          MERGED_CSV="${RESULTS_DIR}/query_times_merged.csv"
-          MERGED_MD="${RESULTS_DIR}/query_times_merged.md"
           EXPECTED_DIR="${GITHUB_WORKSPACE}/expected-results/reduced-clickbench-v1"
+          SUMMARY_CSV="${RESULTS_DIR}/answers_summary.csv"
+          QUERY_RESULTS_DIR="$(find "${RESULTS_DIR}" -type f -name 'query_0.csv' -print -quit | xargs -r dirname)"
+          QUERY_RESULTS_DIR="${QUERY_RESULTS_DIR:-${RESULTS_DIR}}"
 
-          merge_args=(
-            --results-root "${RESULTS_DIR}"
-            --output "${MERGED_CSV}"
-            --markdown-output "${MERGED_MD}"
-          )
-          if [[ -d "${EXPECTED_DIR}" ]]; then
-            merge_args+=(--expected-results-dir "${EXPECTED_DIR}")
+          echo "Scanning results in: ${QUERY_RESULTS_DIR}"
+          echo "Comparing against:   ${EXPECTED_DIR}"
+
+          if [[ ! -d "${EXPECTED_DIR}" ]]; then
+            echo "::warning::expected-results not available; skipping AC/WA verdicts"
           fi
 
-          python3 script/merge_query_times.py "${merge_args[@]}"
+          echo "query,verdict,actual_size,expected_size" > "${SUMMARY_CSV}"
 
           {
-            echo "## ClickBench benchmark results"
+            echo "## ClickBench answer verification"
             echo ""
-            echo "Times in ms. \`NA\` = query not implemented or run failed. \`WA\` = answer mismatched the reference."
+            echo "AC = answer matches reference, WA = answer mismatches, NA = empty/missing actual, ? = no reference baseline."
             echo ""
-            cat "${MERGED_MD}"
-          } >> "${GITHUB_STEP_SUMMARY}"
+            echo "| query | verdict |"
+            echo "|------:|:--------|"
+          } > "${RESULTS_DIR}/summary.md"
 
-          echo "----- merged CSV -----"
-          cat "${MERGED_CSV}"
+          ac=0; wa=0; na=0; unknown=0
+          for q in $(seq 0 42); do
+            actual="${QUERY_RESULTS_DIR}/query_${q}.csv"
+            expected="${EXPECTED_DIR}/query_${q}.csv"
+
+            actual_size=0
+            [[ -f "${actual}" ]] && actual_size=$(stat -c %s "${actual}")
+            expected_size=0
+            [[ -f "${expected}" ]] && expected_size=$(stat -c %s "${expected}")
+
+            if (( actual_size == 0 )); then
+              verdict="NA"; na=$((na+1))
+            elif [[ ! -f "${expected}" ]]; then
+              verdict="?"; unknown=$((unknown+1))
+            elif cmp -s "${actual}" "${expected}"; then
+              verdict="AC"; ac=$((ac+1))
+            else
+              verdict="WA"; wa=$((wa+1))
+            fi
+
+            echo "${q},${verdict},${actual_size},${expected_size}" >> "${SUMMARY_CSV}"
+            echo "| ${q} | ${verdict} |" >> "${RESULTS_DIR}/summary.md"
+          done
+
+          {
+            echo ""
+            echo "**Totals:** AC=${ac}, WA=${wa}, NA=${na}, ?=${unknown}"
+          } >> "${RESULTS_DIR}/summary.md"
+
+          cat "${RESULTS_DIR}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "----- summary csv -----"
+          cat "${SUMMARY_CSV}"
 
       - name: Upload benchmark results
         if: always()
