@@ -26,6 +26,7 @@ private:
         uint64_t count = 0;
         bool has_value = false;
         int64_t int_sum = 0;
+        __int128 big_int_sum = 0;
         long double double_sum = 0;
         int64_t int_value = 0;
         double double_value = 0;

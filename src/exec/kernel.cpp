@@ -8,6 +8,7 @@
 #include <core/columns/timestamp_column.h>
 #include <util/macro.h>
 
+#include <type_traits>
 #include <utility>
 
 namespace columnar::exec::kernel {
@@ -465,10 +466,19 @@ ScalarReduction<std::string> MaxString(const core::Column& col) {
 AvgPartial Avg(const core::Column& col) {
     return VisitNumericCol(col, [](const auto& typed) {
         AvgPartial r;
-        ForEachNonNull(typed, [&](auto v) {
-            r.sum += static_cast<long double>(v);
-            ++r.count;
-        });
+        using ValueType = std::remove_cvref_t<decltype(typed.GetData()[0])>;
+        if constexpr (std::is_integral_v<ValueType>) {
+            r.is_integer = true;
+            ForEachNonNull(typed, [&](auto v) {
+                r.int_sum += static_cast<__int128>(v);
+                ++r.count;
+            });
+        } else {
+            ForEachNonNull(typed, [&](auto v) {
+                r.double_sum += static_cast<long double>(v);
+                ++r.count;
+            });
+        }
         return r;
     });
 }

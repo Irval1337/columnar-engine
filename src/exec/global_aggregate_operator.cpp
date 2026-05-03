@@ -25,7 +25,9 @@ core::DataType OutputType(const AggregationUnit& unit) {
                        ? core::DataType::Double
                        : core::DataType::Int64;
         case AggregationType::Avg:
-            return core::DataType::Double;
+            return GetExpressionType(*unit.expression) == core::DataType::Double
+                       ? core::DataType::Double
+                       : core::DataType::Int64;
         case AggregationType::Min:
         case AggregationType::Max:
             return GetExpressionType(*unit.expression);
@@ -131,7 +133,11 @@ void GlobalAggregationSink::UpdateState(const core::Batch& batch, size_t unit_in
                 THROW_RUNTIME_ERROR("AVG supports only numeric columns");
             }
             auto part = kernel::Avg(col);
-            state.double_sum += part.sum;
+            if (part.is_integer) {
+                state.big_int_sum += part.int_sum;
+            } else {
+                state.double_sum += part.double_sum;
+            }
             state.count += part.count;
             return;
         }
@@ -190,14 +196,20 @@ void GlobalAggregationSink::AppendResult(size_t unit_index, core::Column& out) c
                 AppendInteger(out, state.int_sum);
             }
             return;
-        case AggregationType::Avg:
+        case AggregationType::Avg: {
             if (state.count == 0) {
                 out.AppendNull();
                 return;
             }
-            AppendDouble(
-                out, static_cast<double>(state.double_sum / static_cast<long double>(state.count)));
+            if (out.GetDataType() == core::DataType::Double) {
+                AppendDouble(out, static_cast<double>(state.double_sum /
+                                                      static_cast<long double>(state.count)));
+            } else {
+                AppendInteger(out, static_cast<int64_t>(state.big_int_sum /
+                                                        static_cast<__int128>(state.count)));
+            }
             return;
+        }
         case AggregationType::Min:
         case AggregationType::Max:
             if (!state.has_value) {

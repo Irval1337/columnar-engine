@@ -240,15 +240,39 @@ jobs:
             echo "::warning::expected-results not available; skipping AC/WA verdicts"
           fi
 
-          echo "query,verdict,actual_size,expected_size" > "${SUMMARY_CSV}"
+          echo "query,verdict" > "${SUMMARY_CSV}"
+
+          # Markdown-escape a single-line value so pipes and backticks don't
+          # break the table cell rendering.
+          md_escape() {
+            local s="${1:-}"
+            s="${s//|/\\|}"
+            s="${s//\`/\\\`}"
+            printf '`%s`' "${s}"
+          }
+
+          # Show only the first line; mark truncation with an ellipsis.
+          first_line() {
+            local f="$1"
+            [[ -f "${f}" ]] || { echo ""; return; }
+            local total
+            total=$(wc -l < "${f}")
+            local head_line
+            head_line=$(head -n 1 "${f}")
+            if (( total > 1 )); then
+              printf '%s …(+%d lines)' "${head_line}" "$((total - 1))"
+            else
+              printf '%s' "${head_line}"
+            fi
+          }
 
           {
             echo "## ClickBench answer verification"
             echo ""
             echo "AC = answer matches reference, WA = answer mismatches, NA = empty/missing actual, ? = no reference baseline."
             echo ""
-            echo "| query | verdict |"
-            echo "|------:|:--------|"
+            echo "| query | verdict | actual | expected |"
+            echo "|------:|:--------|:-------|:---------|"
           } > "${RESULTS_DIR}/summary.md"
 
           ac=0; wa=0; na=0; unknown=0
@@ -256,12 +280,7 @@ jobs:
             actual="${QUERY_RESULTS_DIR}/query_${q}.csv"
             expected="${EXPECTED_DIR}/query_${q}.csv"
 
-            actual_size=0
-            [[ -f "${actual}" ]] && actual_size=$(stat -c %s "${actual}")
-            expected_size=0
-            [[ -f "${expected}" ]] && expected_size=$(stat -c %s "${expected}")
-
-            if (( actual_size == 0 )); then
+            if [[ ! -s "${actual}" ]]; then
               verdict="NA"; na=$((na+1))
             elif [[ ! -f "${expected}" ]]; then
               verdict="?"; unknown=$((unknown+1))
@@ -271,8 +290,17 @@ jobs:
               verdict="WA"; wa=$((wa+1))
             fi
 
-            echo "${q},${verdict},${actual_size},${expected_size}" >> "${SUMMARY_CSV}"
-            echo "| ${q} | ${verdict} |" >> "${RESULTS_DIR}/summary.md"
+            echo "${q},${verdict}" >> "${SUMMARY_CSV}"
+
+            # Only show actual/expected for non-AC rows to keep the table readable.
+            if [[ "${verdict}" == "AC" ]]; then
+              actual_md=""
+              expected_md=""
+            else
+              actual_md=$(md_escape "$(first_line "${actual}")")
+              expected_md=$(md_escape "$(first_line "${expected}")")
+            fi
+            echo "| ${q} | ${verdict} | ${actual_md} | ${expected_md} |" >> "${RESULTS_DIR}/summary.md"
           done
 
           {

@@ -47,8 +47,10 @@ ScalarReduction<std::string> MinString(const core::Column& col);
 ScalarReduction<std::string> MaxString(const core::Column& col);
 
 struct AvgPartial {
-    long double sum = 0;
+    __int128 int_sum = 0;
+    long double double_sum = 0;
     uint64_t count = 0;
+    bool is_integer = false;
 };
 AvgPartial Avg(const core::Column& col);
 

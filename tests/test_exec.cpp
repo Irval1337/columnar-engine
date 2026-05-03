@@ -89,12 +89,12 @@ TEST(ClickBenchQueries, SumCountAvg) {
     EXPECT_EQ(result.ColumnsCount(), 3);
     EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "3");
     EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "3");
-    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "200.000000");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "200");
 }
 
 TEST(ClickBenchQueries, AvgUserId) {
     auto result = RunMiniQuery(3);
-    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "13.333333");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "13");
 }
 
 TEST(ClickBenchQueries, CountDistinctUserId) {
