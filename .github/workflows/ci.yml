@@ -137,11 +137,13 @@ jobs:
           RESULTS_DIR="${GITHUB_WORKSPACE}/ci-results"
           BENCH_BRANCH="ci-benchmark-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           DATASET_NAME="reduced-clickbench-v1"
+          EXPECTED_ARCHIVE="expected-results-reduced-clickbench-v1"
           DATASET_REPO="Irval1337/columnar-bench-data"
           DATASET_TAG="reduced-clickbench-v1"
           DATASET_URL="https://github.com/${DATASET_REPO}/releases/download/${DATASET_TAG}"
+          EXPECTED_DIR="${GITHUB_WORKSPACE}/expected-results"
 
-          mkdir -p "${HARNESS}/scripts" "${INPUT_DIR}" "${RESULTS_DIR}"
+          mkdir -p "${HARNESS}/scripts" "${INPUT_DIR}" "${RESULTS_DIR}" "${EXPECTED_DIR}"
 
           if ! command -v zstd >/dev/null 2>&1; then
             sudo apt-get update
@@ -176,6 +178,24 @@ jobs:
             tar --zstd -xf "${DATASET_NAME}.tar.zst"
           )
 
+          # Expected results (per-query CSVs + reference query_times.csv).
+          # Best-effort: if missing on the release, CI continues without WA verdicts.
+          if curl -fsSL -o "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst" \
+                "${DATASET_URL}/${EXPECTED_ARCHIVE}.tar.zst" \
+             && curl -fsSL -o "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst.sha256" \
+                "${DATASET_URL}/${EXPECTED_ARCHIVE}.tar.zst.sha256"; then
+            (
+              cd "${EXPECTED_DIR}"
+              sha256sum -c "${EXPECTED_ARCHIVE}.tar.zst.sha256"
+              tar --zstd -xf "${EXPECTED_ARCHIVE}.tar.zst"
+              rm -f "${EXPECTED_ARCHIVE}.tar.zst" "${EXPECTED_ARCHIVE}.tar.zst.sha256"
+            )
+          else
+            echo "::warning::expected-results archive not found in release; skipping WA verification"
+            rm -f "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst" \
+                  "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst.sha256"
+          fi
+
           echo "HARNESS=${HARNESS}" >> "${GITHUB_ENV}"
           echo "INPUT_DIR=${INPUT_DIR}" >> "${GITHUB_ENV}"
           echo "RESULTS_DIR=${RESULTS_DIR}" >> "${GITHUB_ENV}"
@@ -200,7 +220,65 @@ jobs:
         if: always()
         shell: bash
         run: |
-          find "${RESULTS_DIR}" -maxdepth 1 -type f -printf "%f %s bytes\n" | sort || true
+          find "${RESULTS_DIR}" -maxdepth 2 -printf "%P %s bytes\n" | sort || true
+
+      - name: Inject advisor reference run
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REF_SRC="${GITHUB_WORKSPACE}/expected-results/reduced-clickbench-v1"
+          REF_DST="${RESULTS_DIR}/gmusya/reference"
+
+          if [[ ! -f "${REF_SRC}/query_times.csv" ]]; then
+            echo "No reference query_times.csv at ${REF_SRC}; skipping injection."
+            exit 0
+          fi
+
+          mkdir -p "${REF_DST}"
+          cp "${REF_SRC}/query_times.csv" "${REF_DST}/query_times.csv"
+          # Copy result CSVs so the WA-check sees identical files for the reference run.
+          for f in "${REF_SRC}"/query_*.csv; do
+            cp "${f}" "${REF_DST}/"
+          done
+
+      - name: Build summary table
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -d "${RESULTS_DIR}" ]] || ! find "${RESULTS_DIR}" -name 'query_times.csv' -print -quit | grep -q .; then
+            echo "No query_times.csv produced; skipping summary." | tee -a "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          MERGED_CSV="${RESULTS_DIR}/query_times_merged.csv"
+          MERGED_MD="${RESULTS_DIR}/query_times_merged.md"
+          EXPECTED_DIR="${GITHUB_WORKSPACE}/expected-results/reduced-clickbench-v1"
+
+          merge_args=(
+            --results-root "${RESULTS_DIR}"
+            --output "${MERGED_CSV}"
+            --markdown-output "${MERGED_MD}"
+          )
+          if [[ -d "${EXPECTED_DIR}" ]]; then
+            merge_args+=(--expected-results-dir "${EXPECTED_DIR}")
+          fi
+
+          python3 script/merge_query_times.py "${merge_args[@]}"
+
+          {
+            echo "## ClickBench benchmark results"
+            echo ""
+            echo "Times in ms. \`NA\` = query not implemented or run failed. \`WA\` = answer mismatched the reference."
+            echo ""
+            cat "${MERGED_MD}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "----- merged CSV -----"
+          cat "${MERGED_CSV}"
 
       - name: Upload benchmark results
         if: always()

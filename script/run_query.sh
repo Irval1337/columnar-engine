@@ -42,8 +42,8 @@ mkdir -p "$(dirname "${LOG_FILE}")"
 
 if (( QUERY_NUM > SUPPORTED_QUERY_MAX )); then
   : >"${OUTPUT_CSV}"
-  echo "[run_query] query ${QUERY_NUM} is not implemented yet; wrote an empty result" >>"${LOG_FILE}"
-  exit 0
+  echo "[run_query] query ${QUERY_NUM} is not implemented yet; reporting NA" >>"${LOG_FILE}"
+  exit 2
 fi
 
 time_file="$(mktemp)"
