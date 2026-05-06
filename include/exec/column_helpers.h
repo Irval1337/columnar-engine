@@ -5,11 +5,13 @@
 #include <core/columns/char_column.h>
 #include <core/columns/date_column.h>
 #include <core/columns/numeric_column.h>
+#include <core/columns/string_column.h>
 #include <core/columns/timestamp_column.h>
 #include <core/datatype.h>
 #include <util/macro.h>
 
 #include <cstdint>
+#include <string_view>
 
 namespace columnar::exec {
 inline bool HasIntegerValue(core::DataType type) {
@@ -54,5 +56,54 @@ inline void AppendDouble(core::Column& out, double value) {
         THROW_RUNTIME_ERROR("Cannot append double to output column");
     }
     static_cast<core::DoubleColumn&>(out).Append(value);
+}
+
+inline int64_t ReadIntegerRow(const core::Column& col, size_t row) {
+    switch (col.GetDataType()) {
+        case core::DataType::Int16:
+            return static_cast<const core::Int16Column&>(col).Get(row);
+        case core::DataType::Int32:
+            return static_cast<const core::Int32Column&>(col).Get(row);
+        case core::DataType::Int64:
+            return static_cast<const core::Int64Column&>(col).Get(row);
+        case core::DataType::Date:
+            return static_cast<const core::DateColumn&>(col).Get(row);
+        case core::DataType::Timestamp:
+            return static_cast<const core::TimestampColumn&>(col).Get(row);
+        case core::DataType::Bool:
+            return static_cast<const core::BoolColumn&>(col).Get(row) ? 1 : 0;
+        case core::DataType::Char:
+            return static_cast<const core::CharColumn&>(col).Get(row);
+        default:
+            break;
+    }
+    THROW_RUNTIME_ERROR("Cannot read column row as int64");
+}
+
+inline double ReadDoubleRow(const core::Column& col, size_t row) {
+    if (col.GetDataType() == core::DataType::Double) {
+        return static_cast<const core::DoubleColumn&>(col).Get(row);
+    }
+    return static_cast<double>(ReadIntegerRow(col, row));
+}
+
+inline std::string_view ReadStringRow(const core::Column& col, size_t row) {
+    return static_cast<const core::StringColumn&>(col).Get(row);
+}
+inline void AppendRow(core::Column& out, const core::Column& src, size_t row) {
+    if (src.IsNull(row)) {
+        out.AppendNull();
+        return;
+    }
+    auto type = src.GetDataType();
+    if (type == core::DataType::String) {
+        static_cast<core::StringColumn&>(out).Append(ReadStringRow(src, row));
+        return;
+    }
+    if (type == core::DataType::Double) {
+        AppendDouble(out, ReadDoubleRow(src, row));
+        return;
+    }
+    AppendInteger(out, ReadIntegerRow(src, row));
 }
 }  // namespace columnar::exec

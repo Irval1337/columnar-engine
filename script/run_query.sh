@@ -15,7 +15,6 @@ OUTPUT_CSV="$3"
 LOG_FILE="$4"
 BUILD_DIR="${BUILD_DIR:-${REPO_ROOT}/build-release}"
 RUNNER="${BUILD_DIR}/apps/clickbench/clickbench_runner"
-SUPPORTED_QUERY_MAX="${SUPPORTED_QUERY_MAX:-6}"
 
 if [[ ! "${QUERY_NUM}" =~ ^[0-9]+$ ]]; then
   echo "query_num must be a non-negative integer: ${QUERY_NUM}" >&2
@@ -40,12 +39,8 @@ mkdir -p "$(dirname "${LOG_FILE}")"
   echo "[run_query] output=${OUTPUT_CSV}"
 } >"${LOG_FILE}"
 
-if (( QUERY_NUM > SUPPORTED_QUERY_MAX )); then
-  : >"${OUTPUT_CSV}"
-  echo "[run_query] query ${QUERY_NUM} is not implemented yet; wrote an empty result" >>"${LOG_FILE}"
-  exit 0
-fi
-
+# Unimplemented queries return success with an empty CSV from the runner,
+# so we don't gate by query number here anymore.
 time_file="$(mktemp)"
 cleanup() {
   rm -f "${time_file}"

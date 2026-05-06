@@ -115,8 +115,8 @@ std::unique_ptr<core::Column> ComparePair(const L& lhs, const R& rhs, Cmp&& cmp)
 template <typename Cmp>
 std::unique_ptr<core::Column> CompareIntegers(const core::Column& lhs, const core::Column& rhs,
                                               Cmp cmp) {
-    return VisitIntegerCol(lhs, [&](const auto& l) -> std::unique_ptr<core::Column> {
-        return VisitIntegerCol(rhs, [&](const auto& r) -> std::unique_ptr<core::Column> {
+    return VisitIntegerCol(lhs, [&](const auto& l) {
+        return VisitIntegerCol(rhs, [&](const auto& r) {
             return ComparePair(l, r, [&](auto a, auto b) {
                 return cmp(static_cast<int64_t>(a), static_cast<int64_t>(b));
             });
@@ -127,8 +127,8 @@ std::unique_ptr<core::Column> CompareIntegers(const core::Column& lhs, const cor
 template <typename Cmp>
 std::unique_ptr<core::Column> CompareDoubles(const core::Column& lhs, const core::Column& rhs,
                                              Cmp cmp) {
-    return VisitNumericCol(lhs, [&](const auto& l) -> std::unique_ptr<core::Column> {
-        return VisitNumericCol(rhs, [&](const auto& r) -> std::unique_ptr<core::Column> {
+    return VisitNumericCol(lhs, [&](const auto& l) {
+        return VisitNumericCol(rhs, [&](const auto& r) {
             return ComparePair(l, r, [&](auto a, auto b) {
                 return cmp(static_cast<double>(a), static_cast<double>(b));
             });
@@ -464,21 +464,12 @@ ScalarReduction<std::string> MaxString(const core::Column& col) {
 }
 
 AvgPartial Avg(const core::Column& col) {
-    return VisitNumericCol(col, [](const auto& typed) {
+    return VisitIntegerCol(col, [](const auto& typed) {
         AvgPartial r;
-        using ValueType = std::remove_cvref_t<decltype(typed.GetData()[0])>;
-        if constexpr (std::is_integral_v<ValueType>) {
-            r.is_integer = true;
-            ForEachNonNull(typed, [&](auto v) {
-                r.int_sum += static_cast<__int128>(v);
-                ++r.count;
-            });
-        } else {
-            ForEachNonNull(typed, [&](auto v) {
-                r.double_sum += static_cast<long double>(v);
-                ++r.count;
-            });
-        }
+        ForEachNonNull(typed, [&](auto v) {
+            r.int_sum += static_cast<__int128>(v);
+            ++r.count;
+        });
         return r;
     });
 }

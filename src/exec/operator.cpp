@@ -3,6 +3,9 @@
 #include <core/columns/numeric_column.h>
 #include <exec/filter_operator.h>
 #include <exec/global_aggregate_operator.h>
+#include <exec/hash_aggregate_operator.h>
+#include <exec/project_operator.h>
+#include <exec/topn_operator.h>
 #include <util/macro.h>
 
 namespace columnar::exec {
@@ -37,14 +40,38 @@ void PlanRec(const std::shared_ptr<Operator>& op, const core::Schema& table_sche
             PlanRec(filter.child, table_schema, std::move(required_columns));
             return;
         }
-        case OperatorType::GlobalAggregation: {
-            auto& aggregate = As<GlobalAggregationOperator>(op);
+        case OperatorType::Aggregation: {
+            auto& aggregate = As<AggregationOperator>(op);
+            std::vector<std::string> child_required;
+            if (aggregate.key != nullptr) {
+                CollectColumns(*aggregate.key, child_required);
+            }
             for (auto& unit : aggregate.aggregations) {
                 if (unit.expression != nullptr) {
-                    CollectColumns(*unit.expression, required_columns);
+                    CollectColumns(*unit.expression, child_required);
                 }
             }
-            PlanRec(aggregate.child, table_schema, std::move(required_columns));
+            PlanRec(aggregate.child, table_schema, std::move(child_required));
+            return;
+        }
+        case OperatorType::Project: {
+            auto& project = As<ProjectOperator>(op);
+            std::vector<std::string> child_required;
+            for (auto& unit : project.projections) {
+                CollectColumns(*unit.expression, child_required);
+            }
+            if (child_required.empty() && table_schema.FieldsCount() > 0) {
+                child_required.push_back(table_schema.GetFields()[0].name);
+            }
+            PlanRec(project.child, table_schema, std::move(child_required));
+            return;
+        }
+        case OperatorType::TopN: {
+            auto& topn = As<TopNOperator>(op);
+            for (auto& unit : topn.sort_units) {
+                CollectColumns(*unit.expression, required_columns);
+            }
+            PlanRec(topn.child, table_schema, std::move(required_columns));
             return;
         }
     }
@@ -85,16 +112,34 @@ void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>&
             downstream.Finalize();
             return;
         }
-        case OperatorType::GlobalAggregation: {
-            auto& aggregate = As<GlobalAggregationOperator>(op);
-            GlobalAggregationSink sink(downstream, aggregate.aggregations);
-            ExecuteInto(reader, aggregate.child, sink);
+        case OperatorType::Aggregation: {
+            auto& aggregate = As<AggregationOperator>(op);
+            if (aggregate.key == nullptr) {
+                GlobalAggregationSink sink(downstream, aggregate.aggregations);
+                ExecuteInto(reader, aggregate.child, sink);
+            } else {
+                HashAggregationSink sink(downstream, aggregate.key, aggregate.key_name,
+                                         aggregate.aggregations);
+                ExecuteInto(reader, aggregate.child, sink);
+            }
             return;
         }
         case OperatorType::Filter: {
             auto& filter = As<FilterOperator>(op);
             FilterSink sink(downstream, filter.condition);
             ExecuteInto(reader, filter.child, sink);
+            return;
+        }
+        case OperatorType::Project: {
+            auto& project = As<ProjectOperator>(op);
+            ProjectSink sink(downstream, project.projections);
+            ExecuteInto(reader, project.child, sink);
+            return;
+        }
+        case OperatorType::TopN: {
+            auto& topn = As<TopNOperator>(op);
+            TopNSink sink(downstream, topn.sort_units, topn.limit);
+            ExecuteInto(reader, topn.child, sink);
             return;
         }
     }

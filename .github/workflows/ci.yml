@@ -121,11 +121,46 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [asan, tsan]
 
+    env:
+      DATASET_NAME: reduced-clickbench-v1
+      EXPECTED_ARCHIVE: expected-results-reduced-clickbench-v1
+      DATASET_URL: https://github.com/Irval1337/columnar-bench-data/releases/download/reduced-clickbench-v1
+      INPUT_DIR: ${{ github.workspace }}/.ci-input
+      RESULTS_DIR: ${{ github.workspace }}/ci-results
+      EXPECTED_DIR: ${{ github.workspace }}/expected-results
+      FETCHCONTENT_DIR: ${{ github.workspace }}/.fetchcontent/advisor
+      CCACHE_DIR_HOST: ${{ github.workspace }}/.ccache/advisor
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Cache dataset and expected results
+        id: cache-dataset
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.ci-input
+            ${{ github.workspace }}/expected-results
+          key: advisor-data-${{ env.DATASET_NAME }}-v1
+
+      - name: Cache FetchContent (advisor)
+        uses: actions/cache@v4
+        with:
+          path: .fetchcontent/advisor
+          key: fetchcontent-advisor-${{ hashFiles('cmake/deps.cmake', 'CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-advisor-
+
+      - name: Cache ccache (advisor)
+        uses: actions/cache@v4
+        with:
+          path: .ccache/advisor
+          key: ccache-advisor-${{ github.sha }}
+          restore-keys: |
+            ccache-advisor-
 
       - name: Prepare advisor harness
         shell: bash
@@ -133,17 +168,10 @@ jobs:
           set -euo pipefail
 
           HARNESS="${RUNNER_TEMP}/advisor-harness"
-          INPUT_DIR="${GITHUB_WORKSPACE}/.ci-input"
-          RESULTS_DIR="${GITHUB_WORKSPACE}/ci-results"
           BENCH_BRANCH="ci-benchmark-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          DATASET_NAME="reduced-clickbench-v1"
-          EXPECTED_ARCHIVE="expected-results-reduced-clickbench-v1"
-          DATASET_REPO="Irval1337/columnar-bench-data"
-          DATASET_TAG="reduced-clickbench-v1"
-          DATASET_URL="https://github.com/${DATASET_REPO}/releases/download/${DATASET_TAG}"
-          EXPECTED_DIR="${GITHUB_WORKSPACE}/expected-results"
 
-          mkdir -p "${HARNESS}/scripts" "${INPUT_DIR}" "${RESULTS_DIR}" "${EXPECTED_DIR}"
+          mkdir -p "${HARNESS}/scripts" "${INPUT_DIR}" "${RESULTS_DIR}" \
+                   "${EXPECTED_DIR}" "${FETCHCONTENT_DIR}" "${CCACHE_DIR_HOST}"
 
           if ! command -v zstd >/dev/null 2>&1; then
             sudo apt-get update
@@ -166,39 +194,45 @@ jobs:
           export INPUT_CSV="/input/${DATASET_NAME}/data.csv"
           export COLUMNAR="/results/hits.bruh"
           export RESULTS="/results"
+          export CCACHE_DIR=/ccache
+          export CMAKE_C_COMPILER_LAUNCHER=ccache
+          export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+          export FETCHCONTENT_BASE_DIR=/fetchcontent
           EOF
 
-          curl -fsSL -o "${INPUT_DIR}/${DATASET_NAME}.tar.zst" \
-            "${DATASET_URL}/${DATASET_NAME}.tar.zst"
-          curl -fsSL -o "${INPUT_DIR}/${DATASET_NAME}.sha256" \
-            "${DATASET_URL}/${DATASET_NAME}.sha256"
-          (
-            cd "${INPUT_DIR}"
-            sha256sum -c "${DATASET_NAME}.sha256"
-            tar --zstd -xf "${DATASET_NAME}.tar.zst"
-          )
-
-          # Expected per-query CSV answers used for AC/WA verification.
-          # Best-effort: if missing on the release, CI continues without verdicts.
-          if curl -fsSL -o "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst" \
-                "${DATASET_URL}/${EXPECTED_ARCHIVE}.tar.zst" \
-             && curl -fsSL -o "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst.sha256" \
-                "${DATASET_URL}/${EXPECTED_ARCHIVE}.tar.zst.sha256"; then
+          if [[ "${{ steps.cache-dataset.outputs.cache-hit }}" != "true" ]]; then
+            echo "Dataset cache miss: downloading ${DATASET_NAME}"
+            curl -fsSL -o "${INPUT_DIR}/${DATASET_NAME}.tar.zst" \
+              "${DATASET_URL}/${DATASET_NAME}.tar.zst"
+            curl -fsSL -o "${INPUT_DIR}/${DATASET_NAME}.sha256" \
+              "${DATASET_URL}/${DATASET_NAME}.sha256"
             (
-              cd "${EXPECTED_DIR}"
-              sha256sum -c "${EXPECTED_ARCHIVE}.tar.zst.sha256"
-              tar --zstd -xf "${EXPECTED_ARCHIVE}.tar.zst"
-              rm -f "${EXPECTED_ARCHIVE}.tar.zst" "${EXPECTED_ARCHIVE}.tar.zst.sha256"
+              cd "${INPUT_DIR}"
+              sha256sum -c "${DATASET_NAME}.sha256"
+              tar --zstd -xf "${DATASET_NAME}.tar.zst"
+              rm -f "${DATASET_NAME}.tar.zst"
             )
+
+            if curl -fsSL -o "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst" \
+                  "${DATASET_URL}/${EXPECTED_ARCHIVE}.tar.zst" \
+               && curl -fsSL -o "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst.sha256" \
+                  "${DATASET_URL}/${EXPECTED_ARCHIVE}.tar.zst.sha256"; then
+              (
+                cd "${EXPECTED_DIR}"
+                sha256sum -c "${EXPECTED_ARCHIVE}.tar.zst.sha256"
+                tar --zstd -xf "${EXPECTED_ARCHIVE}.tar.zst"
+                rm -f "${EXPECTED_ARCHIVE}.tar.zst" "${EXPECTED_ARCHIVE}.tar.zst.sha256"
+              )
+            else
+              echo "::warning::expected-results archive not found in release; skipping WA verification"
+              rm -f "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst" \
+                    "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst.sha256"
+            fi
           else
-            echo "::warning::expected-results archive not found in release; skipping WA verification"
-            rm -f "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst" \
-                  "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst.sha256"
+            echo "Dataset cache hit; skipping download."
           fi
 
           echo "HARNESS=${HARNESS}" >> "${GITHUB_ENV}"
-          echo "INPUT_DIR=${INPUT_DIR}" >> "${GITHUB_ENV}"
-          echo "RESULTS_DIR=${RESULTS_DIR}" >> "${GITHUB_ENV}"
 
       - name: Build advisor image
         shell: bash
@@ -213,8 +247,26 @@ jobs:
             --volume "${GITHUB_WORKSPACE}:/source:ro" \
             --volume "${INPUT_DIR}:/input:ro" \
             --volume "${RESULTS_DIR}:/results" \
+            --volume "${FETCHCONTENT_DIR}:/fetchcontent" \
+            --volume "${CCACHE_DIR_HOST}:/ccache" \
             columnar-advisor-benchmark \
-            -lc 'git config --global --add safe.directory /source && git config --global --add safe.directory /source/.git && /bench/commands.sh'
+            -lc 'set -euo pipefail
+                 apt-get update -qq
+                 apt-get install -y -qq --no-install-recommends ccache
+                 git config --global --add safe.directory /source
+                 git config --global --add safe.directory /source/.git
+                 ccache --version | head -1
+                 ccache --show-stats || true
+                 /bench/commands.sh
+                 echo "----- ccache stats after run -----"
+                 ccache --show-stats'
+
+      - name: Reclaim cache ownership
+        if: always()
+        shell: bash
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" \
+            "${CCACHE_DIR_HOST}" "${FETCHCONTENT_DIR}" 2>/dev/null || true
 
       - name: Show benchmark results
         if: always()
