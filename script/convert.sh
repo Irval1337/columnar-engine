@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "usage: convert.sh <input.csv> <input.schema.csv> <output.columnar>" >&2
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  echo "usage: convert.sh <input.csv> <output.columnar> [input.schema.csv]" >&2
   exit 1
 fi
 
@@ -10,8 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 INPUT_CSV="$1"
-INPUT_SCHEMA="$2"
-OUTPUT_COLUMNAR="$3"
+OUTPUT_COLUMNAR="$2"
+INPUT_SCHEMA="${3:-${HITS_SCHEMA:-${REPO_ROOT}/script/hits.schema.csv}}"
 BUILD_DIR="${BUILD_DIR:-${REPO_ROOT}/build-release}"
 CONVERTER="${BUILD_DIR}/apps/converter/converter"
 

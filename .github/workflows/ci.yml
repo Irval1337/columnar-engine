@@ -62,7 +62,6 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build-asan --output-on-failure
 
-
   tsan:
     name: Tests (TSAN)
     runs-on: ubuntu-24.04
@@ -117,42 +116,258 @@ jobs:
           TSAN_OPTIONS: "halt_on_error=1"
         run: ctest --test-dir build-tsan --output-on-failure
 
-
-  release-bench:
-    name: Benchmark (Release)
+  advisor-benchmark:
+    name: Advisor Docker Benchmark
     runs-on: ubuntu-24.04
     needs: [asan, tsan]
 
     env:
-      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.fetchcontent/release
-      CCACHE_DIR: ${{ github.workspace }}/.ccache/release
+      DATASET_NAME: reduced-clickbench-v1
+      EXPECTED_ARCHIVE: expected-results-reduced-clickbench-v1
+      DATASET_URL: https://github.com/Irval1337/columnar-bench-data/releases/download/reduced-clickbench-v1
+      INPUT_DIR: ${{ github.workspace }}/.ci-input
+      RESULTS_DIR: ${{ github.workspace }}/ci-results
+      EXPECTED_DIR: ${{ github.workspace }}/expected-results
+      FETCHCONTENT_DIR: ${{ github.workspace }}/.fetchcontent/advisor
+      CCACHE_DIR_HOST: ${{ github.workspace }}/.ccache/advisor
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build cmake g++ ccache zstd
-
-      - name: Cache FetchContent
+      - name: Cache dataset and expected results
+        id: cache-dataset
         uses: actions/cache@v4
         with:
-          path: .fetchcontent/release
-          key: fetchcontent-${{ runner.os }}-release-${{ hashFiles('cmake/deps.cmake', 'CMakeLists.txt') }}
-          restore-keys: |
-            fetchcontent-${{ runner.os }}-release-
+          path: |
+            ${{ github.workspace }}/.ci-input
+            ${{ github.workspace }}/expected-results
+          key: advisor-data-${{ env.DATASET_NAME }}-v1
 
-      - name: Cache ccache
+      - name: Cache FetchContent (advisor)
         uses: actions/cache@v4
         with:
-          path: .ccache/release
-          key: ccache-${{ runner.os }}-release-${{ github.sha }}
+          path: .fetchcontent/advisor
+          key: fetchcontent-advisor-${{ hashFiles('cmake/deps.cmake', 'CMakeLists.txt') }}
           restore-keys: |
-            ccache-${{ runner.os }}-release-
+            fetchcontent-advisor-
 
-      - name: Build and Benchmark
+      - name: Cache ccache (advisor)
+        uses: actions/cache@v4
+        with:
+          path: .ccache/advisor
+          key: ccache-advisor-${{ github.sha }}
+          restore-keys: |
+            ccache-advisor-
+
+      - name: Prepare advisor harness
+        shell: bash
         run: |
-          chmod +x script/run_benchmarks.sh
-          ./script/run_benchmarks.sh
+          set -euo pipefail
+
+          HARNESS="${RUNNER_TEMP}/advisor-harness"
+          BENCH_BRANCH="ci-benchmark-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          mkdir -p "${HARNESS}/scripts" "${INPUT_DIR}" "${RESULTS_DIR}" \
+                   "${EXPECTED_DIR}" "${FETCHCONTENT_DIR}" "${CCACHE_DIR_HOST}"
+
+          if ! command -v zstd >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y zstd
+          fi
+
+          curl -fsSL \
+            https://raw.githubusercontent.com/gmusya/clmnr-ngn/c7cf6827e0f3edf1f46580e137a2ac94619dda82/script/Dockerfile \
+            -o "${HARNESS}/Dockerfile"
+          curl -fsSL \
+            https://raw.githubusercontent.com/gmusya/clmnr-ngn/7660e9a3b7238e21f38697bfa96dd9da770bd5c6/script/commands.sh \
+            -o "${HARNESS}/scripts/commands.sh"
+          chmod +x "${HARNESS}/scripts/commands.sh"
+
+          git branch -f "${BENCH_BRANCH}" HEAD
+
+          cat > "${HARNESS}/scripts/env.sh" <<EOF
+          export BRANCH="${BENCH_BRANCH}"
+          export REPO_URL="file:///source"
+          export INPUT_CSV="/input/${DATASET_NAME}/data.csv"
+          export COLUMNAR="/results/hits.bruh"
+          export RESULTS="/results"
+          export CCACHE_DIR=/ccache
+          export CMAKE_C_COMPILER_LAUNCHER=ccache
+          export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+          export FETCHCONTENT_BASE_DIR=/fetchcontent
+          EOF
+
+          if [[ "${{ steps.cache-dataset.outputs.cache-hit }}" != "true" ]]; then
+            echo "Dataset cache miss: downloading ${DATASET_NAME}"
+            curl -fsSL -o "${INPUT_DIR}/${DATASET_NAME}.tar.zst" \
+              "${DATASET_URL}/${DATASET_NAME}.tar.zst"
+            curl -fsSL -o "${INPUT_DIR}/${DATASET_NAME}.sha256" \
+              "${DATASET_URL}/${DATASET_NAME}.sha256"
+            (
+              cd "${INPUT_DIR}"
+              sha256sum -c "${DATASET_NAME}.sha256"
+              tar --zstd -xf "${DATASET_NAME}.tar.zst"
+              rm -f "${DATASET_NAME}.tar.zst"
+            )
+
+            if curl -fsSL -o "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst" \
+                  "${DATASET_URL}/${EXPECTED_ARCHIVE}.tar.zst" \
+               && curl -fsSL -o "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst.sha256" \
+                  "${DATASET_URL}/${EXPECTED_ARCHIVE}.tar.zst.sha256"; then
+              (
+                cd "${EXPECTED_DIR}"
+                sha256sum -c "${EXPECTED_ARCHIVE}.tar.zst.sha256"
+                tar --zstd -xf "${EXPECTED_ARCHIVE}.tar.zst"
+                rm -f "${EXPECTED_ARCHIVE}.tar.zst" "${EXPECTED_ARCHIVE}.tar.zst.sha256"
+              )
+            else
+              echo "::warning::expected-results archive not found in release; skipping WA verification"
+              rm -f "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst" \
+                    "${EXPECTED_DIR}/${EXPECTED_ARCHIVE}.tar.zst.sha256"
+            fi
+          else
+            echo "Dataset cache hit; skipping download."
+          fi
+
+          echo "HARNESS=${HARNESS}" >> "${GITHUB_ENV}"
+
+      - name: Build advisor image
+        shell: bash
+        run: docker build -t columnar-advisor-benchmark -f "${HARNESS}/Dockerfile" "${HARNESS}"
+
+      - name: Run advisor benchmark
+        shell: bash
+        run: |
+          docker run --rm \
+            --entrypoint bash \
+            --workdir /bench \
+            --volume "${GITHUB_WORKSPACE}:/source:ro" \
+            --volume "${INPUT_DIR}:/input:ro" \
+            --volume "${RESULTS_DIR}:/results" \
+            --volume "${FETCHCONTENT_DIR}:/fetchcontent" \
+            --volume "${CCACHE_DIR_HOST}:/ccache" \
+            columnar-advisor-benchmark \
+            -lc 'set -euo pipefail
+                 apt-get update -qq
+                 apt-get install -y -qq --no-install-recommends ccache
+                 git config --global --add safe.directory /source
+                 git config --global --add safe.directory /source/.git
+                 ccache --version | head -1
+                 ccache --show-stats || true
+                 /bench/commands.sh
+                 echo "----- ccache stats after run -----"
+                 ccache --show-stats'
+
+      - name: Reclaim cache ownership
+        if: always()
+        shell: bash
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" \
+            "${CCACHE_DIR_HOST}" "${FETCHCONTENT_DIR}" 2>/dev/null || true
+
+      - name: Show benchmark results
+        if: always()
+        shell: bash
+        run: |
+          find "${RESULTS_DIR}" -maxdepth 2 -printf "%P %s bytes\n" | sort || true
+
+      - name: Build answers summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPECTED_DIR="${GITHUB_WORKSPACE}/expected-results/reduced-clickbench-v1"
+          SUMMARY_CSV="${RESULTS_DIR}/answers_summary.csv"
+          QUERY_RESULTS_DIR="$(find "${RESULTS_DIR}" -type f -name 'query_0.csv' -print -quit | xargs -r dirname)"
+          QUERY_RESULTS_DIR="${QUERY_RESULTS_DIR:-${RESULTS_DIR}}"
+
+          echo "Scanning results in: ${QUERY_RESULTS_DIR}"
+          echo "Comparing against:   ${EXPECTED_DIR}"
+
+          if [[ ! -d "${EXPECTED_DIR}" ]]; then
+            echo "::warning::expected-results not available; skipping AC/WA verdicts"
+          fi
+
+          echo "query,verdict" > "${SUMMARY_CSV}"
+
+          # Markdown-escape a single-line value so pipes and backticks don't
+          # break the table cell rendering.
+          md_escape() {
+            local s="${1:-}"
+            s="${s//|/\\|}"
+            s="${s//\`/\\\`}"
+            printf '`%s`' "${s}"
+          }
+
+          # Show only the first line; mark truncation with an ellipsis.
+          first_line() {
+            local f="$1"
+            [[ -f "${f}" ]] || { echo ""; return; }
+            local total
+            total=$(wc -l < "${f}")
+            local head_line
+            head_line=$(head -n 1 "${f}")
+            if (( total > 1 )); then
+              printf '%s …(+%d lines)' "${head_line}" "$((total - 1))"
+            else
+              printf '%s' "${head_line}"
+            fi
+          }
+
+          {
+            echo "## ClickBench answer verification"
+            echo ""
+            echo "AC = answer matches reference, WA = answer mismatches, NA = empty/missing actual, ? = no reference baseline."
+            echo ""
+            echo "| query | verdict | actual | expected |"
+            echo "|------:|:--------|:-------|:---------|"
+          } > "${RESULTS_DIR}/summary.md"
+
+          ac=0; wa=0; na=0; unknown=0
+          for q in $(seq 0 42); do
+            actual="${QUERY_RESULTS_DIR}/query_${q}.csv"
+            expected="${EXPECTED_DIR}/query_${q}.csv"
+
+            if [[ ! -s "${actual}" ]]; then
+              verdict="NA"; na=$((na+1))
+            elif [[ ! -f "${expected}" ]]; then
+              verdict="?"; unknown=$((unknown+1))
+            elif cmp -s "${actual}" "${expected}"; then
+              verdict="AC"; ac=$((ac+1))
+            else
+              verdict="WA"; wa=$((wa+1))
+            fi
+
+            echo "${q},${verdict}" >> "${SUMMARY_CSV}"
+
+            # Only show actual/expected for non-AC rows to keep the table readable.
+            if [[ "${verdict}" == "AC" ]]; then
+              actual_md=""
+              expected_md=""
+            else
+              actual_md=$(md_escape "$(first_line "${actual}")")
+              expected_md=$(md_escape "$(first_line "${expected}")")
+            fi
+            echo "| ${q} | ${verdict} | ${actual_md} | ${expected_md} |" >> "${RESULTS_DIR}/summary.md"
+          done
+
+          {
+            echo ""
+            echo "**Totals:** AC=${ac}, WA=${wa}, NA=${na}, ?=${unknown}"
+          } >> "${RESULTS_DIR}/summary.md"
+
+          cat "${RESULTS_DIR}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
+
+          echo "----- summary csv -----"
+          cat "${SUMMARY_CSV}"
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: advisor-benchmark-results
+          path: ci-results

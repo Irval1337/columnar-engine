@@ -28,6 +28,8 @@ append_cmake_arg_if_set() {
 append_cmake_arg_if_set CMAKE_C_COMPILER
 append_cmake_arg_if_set CMAKE_CXX_COMPILER
 
+append_cmake_arg_if_set CMAKE_C_COMPILER_LAUNCHER
+append_cmake_arg_if_set CMAKE_CXX_COMPILER_LAUNCHER
 
 append_cmake_arg_if_set CMAKE_C_FLAGS
 append_cmake_arg_if_set CMAKE_CXX_FLAGS
@@ -52,7 +54,7 @@ if ! cmake "${cmake_args[@]}"; then
   cmake "${cmake_args[@]}"
 fi
 
-echo "[build] build converter"
-cmake --build "${BUILD_DIR}" --target converter -j
+echo "[build] build converter and clickbench_runner"
+cmake --build "${BUILD_DIR}" --target converter clickbench_runner -j
 
-echo "[build] done: ${BUILD_DIR}/apps/converter/converter"
+echo "[build] done: ${BUILD_DIR}"
