@@ -362,11 +362,14 @@ TEST(ClickBenchQueries, Q22TitleGoogleWithoutDotGoogle) {
 
 TEST(ClickBenchQueries, Q24SearchPhraseByEventTime) {
     auto result = RunMiniQuery(24);
-    ASSERT_EQ(result.ColumnsCount(), 1);
+    ASSERT_EQ(result.ColumnsCount(), 2);
     ASSERT_EQ(result.RowsCount(), 3);
     EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "beta");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "2013-07-01 09:00:00");
     EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "alpha");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(1), "2013-07-02 10:00:00");
     EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "alpha");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(2), "2013-07-03 08:00:00");
 }
 
 TEST(ClickBenchQueries, Q25SearchPhraseBySearchPhrase) {
@@ -380,11 +383,14 @@ TEST(ClickBenchQueries, Q25SearchPhraseBySearchPhrase) {
 
 TEST(ClickBenchQueries, Q26SearchPhraseByEventTimeAndSearchPhrase) {
     auto result = RunMiniQuery(26);
-    ASSERT_EQ(result.ColumnsCount(), 1);
+    ASSERT_EQ(result.ColumnsCount(), 2);
     ASSERT_EQ(result.RowsCount(), 3);
     EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "beta");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "2013-07-01 09:00:00");
     EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "alpha");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(1), "2013-07-02 10:00:00");
     EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "alpha");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(2), "2013-07-03 08:00:00");
 }
 
 TEST(ClickBenchQueries, Q33CountPerUrl) {

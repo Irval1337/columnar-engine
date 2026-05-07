@@ -169,7 +169,9 @@ std::shared_ptr<Operator> QueryMaker::MakeQ10() const {
         MakeHashAggregation(MakeFilter(MakeScan(), NotEmpty(table_schema_, "MobilePhoneModel")),
                             ColumnRef(table_schema_, "MobilePhoneModel"), "MobilePhoneModel",
                             {Distinct(ColumnRef(table_schema_, "UserID"), "u")});
-    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("u", core::DataType::Int64), false}},
+    return MakeTopN(std::move(agg),
+                    {SortUnit{MakeColumnExpr("u", core::DataType::Int64), false},
+                     SortUnit{MakeColumnExpr("MobilePhoneModel", core::DataType::String), false}},
                     10);
 }
 
@@ -241,13 +243,31 @@ std::shared_ptr<Operator> QueryMaker::MakeQ22() const {
     auto condition = And(And(MakeContains(ColumnRef(table_schema_, "Title"), "Google"),
                              MakeContains(ColumnRef(table_schema_, "URL"), ".google.", true)),
                          NotEmpty(table_schema_, "SearchPhrase"));
+    std::vector<AggregationUnit> aggregations = {
+        Min(ColumnRef(table_schema_, "URL"), "min_url"),
+        Min(ColumnRef(table_schema_, "Title"), "min_title"), Count("c"),
+        Distinct(ColumnRef(table_schema_, "UserID"), "distinct_u")};
+    std::vector<SortUnit> sort_units = {
+        SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}};
+    if (table_schema_.HasField("WindowClientWidth") && table_schema_.HasField("WatchID")) {
+        aggregations.push_back(
+            Max(ColumnRef(table_schema_, "WindowClientWidth"), "max_window_client_width"));
+        aggregations.push_back(Min(ColumnRef(table_schema_, "WatchID"), "min_watch_id"));
+        sort_units.push_back(
+            SortUnit{MakeColumnExpr("max_window_client_width", core::DataType::Int16), false});
+        sort_units.push_back(SortUnit{MakeColumnExpr("min_watch_id", core::DataType::Int64), true});
+    }
     auto agg = MakeHashAggregation(MakeFilter(MakeScan(), std::move(condition)),
                                    ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase",
-                                   {Min(ColumnRef(table_schema_, "URL"), "min_url"),
-                                    Min(ColumnRef(table_schema_, "Title"), "min_title"), Count("c"),
-                                    Distinct(ColumnRef(table_schema_, "UserID"), "distinct_u")});
-    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
-                    10);
+                                   std::move(aggregations));
+    auto top = MakeTopN(std::move(agg), std::move(sort_units), 10);
+    return MakeProject(
+        std::move(top),
+        {ProjectionUnit{MakeColumnExpr("SearchPhrase", core::DataType::String), "SearchPhrase"},
+         ProjectionUnit{MakeColumnExpr("min_url", core::DataType::String), "min_url"},
+         ProjectionUnit{MakeColumnExpr("min_title", core::DataType::String), "min_title"},
+         ProjectionUnit{MakeColumnExpr("c", core::DataType::Int64), "c"},
+         ProjectionUnit{MakeColumnExpr("distinct_u", core::DataType::Int64), "distinct_u"}});
 }
 
 std::shared_ptr<Operator> QueryMaker::MakeQ24() const {
@@ -256,7 +276,8 @@ std::shared_ptr<Operator> QueryMaker::MakeQ24() const {
     auto top = MakeTopN(MakeFilter(MakeScan(), NotEmpty(table_schema_, "SearchPhrase")),
                         {SortUnit{ColumnRef(table_schema_, "EventTime"), true}}, 10);
     return MakeProject(std::move(top),
-                       {ProjectionUnit{ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase"}});
+                       {ProjectionUnit{ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase"},
+                        ProjectionUnit{ColumnRef(table_schema_, "EventTime"), "EventTime"}});
 }
 
 std::shared_ptr<Operator> QueryMaker::MakeQ25() const {
@@ -276,7 +297,8 @@ std::shared_ptr<Operator> QueryMaker::MakeQ26() const {
                          SortUnit{ColumnRef(table_schema_, "SearchPhrase"), true}},
                         10);
     return MakeProject(std::move(top),
-                       {ProjectionUnit{ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase"}});
+                       {ProjectionUnit{ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase"},
+                        ProjectionUnit{ColumnRef(table_schema_, "EventTime"), "EventTime"}});
 }
 
 std::shared_ptr<Operator> QueryMaker::MakeQ33() const {
