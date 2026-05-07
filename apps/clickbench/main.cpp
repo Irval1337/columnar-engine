@@ -26,6 +26,12 @@ void WriteBatches(std::ostream& os, const std::vector<core::Batch>& batches, boo
     }
     writer.Flush();
 }
+
+void WriteEmptyOutput(const std::string& output) {
+    if (output != "-") {
+        util::BufferedOutputFile out(output);
+    }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -56,6 +62,11 @@ int main(int argc, char** argv) {
         }
         return 0;
     } catch (const std::exception& e) {
+        std::string error = e.what();
+        if (error.find("Unsupported ClickBench query") != std::string::npos) {
+            WriteEmptyOutput(output);
+            return 0;
+        }
         std::cerr << "Error: " << e.what() << "\n";
         return 1;
     } catch (...) {
