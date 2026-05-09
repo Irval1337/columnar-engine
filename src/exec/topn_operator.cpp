@@ -1,0 +1,135 @@
+#include <exec/topn_operator.h>
+
+#include <core/columns/string_column.h>
+#include <core/datatype.h>
+#include <core/schema.h>
+#include <exec/column_helpers.h>
+#include <exec/expression.h>
+#include <util/macro.h>
+
+#include <algorithm>
+#include <utility>
+
+namespace columnar::exec {
+namespace {
+struct RowRef {
+    uint32_t batch_idx;
+    uint32_t row_idx;
+};
+
+int CompareRowRefs(const core::Column& col_a, size_t row_a, const core::Column& col_b,
+                   size_t row_b) {
+    bool a_null = col_a.IsNull(row_a);
+    bool b_null = col_b.IsNull(row_b);
+    if (a_null || b_null) {
+        if (a_null && b_null) {
+            return 0;
+        }
+        return a_null ? -1 : 1;
+    }
+    auto type = col_a.GetDataType();
+    if (type == core::DataType::String) {
+        auto av = ReadStringRow(col_a, row_a);
+        auto bv = ReadStringRow(col_b, row_b);
+        if (av < bv) {
+            return -1;
+        }
+        if (av > bv) {
+            return 1;
+        }
+        return 0;
+    }
+    if (type == core::DataType::Double) {
+        auto av = ReadDoubleRow(col_a, row_a);
+        auto bv = ReadDoubleRow(col_b, row_b);
+        if (av < bv) {
+            return -1;
+        }
+        if (av > bv) {
+            return 1;
+        }
+        return 0;
+    }
+    auto av = ReadIntegerRow(col_a, row_a);
+    auto bv = ReadIntegerRow(col_b, row_b);
+    if (av < bv) {
+        return -1;
+    }
+    if (av > bv) {
+        return 1;
+    }
+    return 0;
+}
+}  // namespace
+
+TopNSink::TopNSink(IOperator& downstream, std::vector<SortUnit> sort_units,
+                   std::optional<size_t> limit)
+    : downstream_(downstream), sort_units_(std::move(sort_units)), limit_(limit) {
+}
+
+void TopNSink::Consume(core::Batch batch) {
+    if (batch.RowsCount() == 0) {
+        return;
+    }
+    buffer_.push_back(std::move(batch));
+}
+
+void TopNSink::Finalize() {
+    if (buffer_.empty()) {
+        downstream_.Finalize();
+        return;
+    }
+    size_t total_rows = 0;
+    for (auto& b : buffer_) {
+        total_rows += b.RowsCount();
+    }
+    std::vector<RowRef> refs;
+    refs.reserve(total_rows);
+    for (size_t b = 0; b < buffer_.size(); ++b) {
+        size_t rows = buffer_[b].RowsCount();
+        for (size_t r = 0; r < rows; ++r) {
+            refs.push_back({static_cast<uint32_t>(b), static_cast<uint32_t>(r)});
+        }
+    }
+    std::vector<std::vector<EvalResult>> sort_evals(sort_units_.size());
+    std::vector<std::vector<const core::Column*>> sort_cols(sort_units_.size());
+    for (size_t s = 0; s < sort_units_.size(); ++s) {
+        sort_evals[s].reserve(buffer_.size());
+        sort_cols[s].reserve(buffer_.size());
+        for (auto& batch : buffer_) {
+            sort_evals[s].emplace_back(Evaluate(batch, *sort_units_[s].expression));
+            sort_cols[s].push_back(&sort_evals[s].back().Get());
+        }
+    }
+
+    auto less = [&](const RowRef& a, const RowRef& b) {
+        for (size_t s = 0; s < sort_units_.size(); ++s) {
+            int cmp = CompareRowRefs(*sort_cols[s][a.batch_idx], a.row_idx,
+                                     *sort_cols[s][b.batch_idx], b.row_idx);
+            if (cmp == 0) {
+                continue;
+            }
+            return sort_units_[s].ascending ? cmp < 0 : cmp > 0;
+        }
+        return false;
+    };
+
+    if (limit_ && *limit_ < refs.size()) {
+        std::partial_sort(refs.begin(), refs.begin() + *limit_, refs.end(), less);
+        refs.resize(*limit_);
+    } else {
+        std::sort(refs.begin(), refs.end(), less);
+    }
+    core::Batch out(buffer_.front().GetSchema(), refs.size());
+    size_t cols = buffer_.front().ColumnsCount();
+    for (size_t c = 0; c < cols; ++c) {
+        auto& dst = out.ColumnAt(c);
+        for (auto& ref : refs) {
+            AppendRow(dst, buffer_[ref.batch_idx].ColumnAt(c), ref.row_idx);
+        }
+    }
+
+    downstream_.Consume(std::move(out));
+    downstream_.Finalize();
+}
+}  // namespace columnar::exec

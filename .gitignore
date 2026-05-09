@@ -39,3 +39,14 @@
 
 # debug information files
 *.dwo
+
+build/
+build-*/
+build_*/
+.vscode/
+.cache/
+.clangd
+.deps/
+.fetchcontent/
+.ccache/
+/clickbench/
