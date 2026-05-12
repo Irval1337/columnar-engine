@@ -30,12 +30,14 @@ private:
     std::shared_ptr<Operator> MakeQ8() const;
     std::shared_ptr<Operator> MakeQ9() const;
     std::shared_ptr<Operator> MakeQ10() const;
-    // TODO: MakeQ11
+    std::shared_ptr<Operator> MakeQ11() const;
     std::shared_ptr<Operator> MakeQ12() const;
     std::shared_ptr<Operator> MakeQ13() const;
-    // TODO: MakeQ14
+    std::shared_ptr<Operator> MakeQ14() const;
     std::shared_ptr<Operator> MakeQ15() const;
-    // TODO: MakeQ16-18
+    std::shared_ptr<Operator> MakeQ16() const;
+    std::shared_ptr<Operator> MakeQ17() const;
+    // TODO: MakeQ18
     std::shared_ptr<Operator> MakeQ19() const;
     std::shared_ptr<Operator> MakeQ20() const;
     std::shared_ptr<Operator> MakeQ21() const;
@@ -44,9 +46,14 @@ private:
     std::shared_ptr<Operator> MakeQ24() const;
     std::shared_ptr<Operator> MakeQ25() const;
     std::shared_ptr<Operator> MakeQ26() const;
-    // TODO: MakeQ27-32
+    // TODO: MakeQ27-28
+    std::shared_ptr<Operator> MakeQ29() const;
+    std::shared_ptr<Operator> MakeQ30() const;
+    std::shared_ptr<Operator> MakeQ31() const;
+    std::shared_ptr<Operator> MakeQ32() const;
     std::shared_ptr<Operator> MakeQ33() const;
-    // TODO: MakeQ34-35
+    std::shared_ptr<Operator> MakeQ34() const;
+    std::shared_ptr<Operator> MakeQ35() const;
     std::shared_ptr<Operator> MakeQ36() const;
     std::shared_ptr<Operator> MakeQ37() const;
     // TODO: MakeQ38-42

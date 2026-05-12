@@ -133,7 +133,8 @@ TEST(SchemaReader, ReadWrite) {
 }
 
 TEST(SchemaReader, ReadWriteLogicalAndCharTypes) {
-    std::istringstream in("birth_date,date\ncreated_at,timestamp\ngrade,char,nullable\nscore,int32");
+    std::istringstream in(
+        "birth_date,date\ncreated_at,timestamp\ngrade,char,nullable\nscore,int32");
     auto schema = csv::SchemaManager::ReadFromStream(in);
 
     EXPECT_EQ(schema.FieldsCount(), 4);
@@ -147,8 +148,9 @@ TEST(SchemaReader, ReadWriteLogicalAndCharTypes) {
     std::ostringstream out;
     csv::SchemaManager::WriteToStream(out, schema);
 
-    EXPECT_EQ(NormalizeCSV(out.str()),
-              NormalizeCSV("birth_date,date\ncreated_at,timestamp\ngrade,char,nullable\nscore,int32"));
+    EXPECT_EQ(
+        NormalizeCSV(out.str()),
+        NormalizeCSV("birth_date,date\ncreated_at,timestamp\ngrade,char,nullable\nscore,int32"));
 }
 
 TEST(CSVBatchReader, ReadBatches) {
@@ -247,6 +249,20 @@ TEST(CSVBatchWriter, QuotesAndCommas) {
     writer.Flush();
 
     EXPECT_EQ(out.str(), "\"king,,, arthur\"\n\"came \"\"a lot\"\"\"\n");
+}
+
+TEST(CSVBatchWriter, EmptyNonNullableStringIsBareField) {
+    core::Schema schema({core::Field("t", core::DataType::String)});
+
+    core::Batch batch(schema);
+    batch.ColumnAt(0).AppendFromString("");
+
+    std::ostringstream out;
+    csv::CSVBatchWriter writer(out, {});
+    writer.Write(batch);
+    writer.Flush();
+
+    EXPECT_EQ(out.str(), "\n");
 }
 
 TEST(CSVBatchWriter, WriteDoubleFormatting) {

@@ -24,6 +24,10 @@ std::unique_ptr<core::Column> EvalBinary(const core::Column& lhs, const core::Co
             return kernel::And(lhs, rhs);
         case BinaryFunction::Or:
             return kernel::Or(lhs, rhs);
+        case BinaryFunction::Plus:
+            return kernel::Add(lhs, rhs);
+        case BinaryFunction::Minus:
+            return kernel::Subtract(lhs, rhs);
     }
     THROW_RUNTIME_ERROR("Unsupported binary function");
 }
@@ -38,6 +42,9 @@ core::DataType GetExpressionType(const Expression& expr) {
         case ExpressionType::Column:
             return static_cast<const ColumnExpr&>(expr).type;
         case ExpressionType::Binary:
+            return IsArithmeticFunction(static_cast<const BinaryExpr&>(expr).function)
+                       ? core::DataType::Int64
+                       : core::DataType::Bool;
         case ExpressionType::Contains:
             return core::DataType::Bool;
     }

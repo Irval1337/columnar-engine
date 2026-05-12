@@ -62,7 +62,13 @@ enum class BinaryFunction {
     LessOrEqual,
     Greater,
     GreaterOrEqual,
+    Plus,
+    Minus,
 };
+
+inline bool IsArithmeticFunction(BinaryFunction function) {
+    return function == BinaryFunction::Plus || function == BinaryFunction::Minus;
+}
 
 struct BinaryExpr final : public Expression {
     BinaryExpr(BinaryFunction f, std::shared_ptr<Expression> l, std::shared_ptr<Expression> r)

@@ -43,8 +43,8 @@ void PlanRec(const std::shared_ptr<Operator>& op, const core::Schema& table_sche
         case OperatorType::Aggregation: {
             auto& aggregate = As<AggregationOperator>(op);
             std::vector<std::string> child_required;
-            if (aggregate.key != nullptr) {
-                CollectColumns(*aggregate.key, child_required);
+            for (auto& key : aggregate.keys) {
+                CollectColumns(*key.expression, child_required);
             }
             for (auto& unit : aggregate.aggregations) {
                 if (unit.expression != nullptr) {
@@ -114,12 +114,11 @@ void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>&
         }
         case OperatorType::Aggregation: {
             auto& aggregate = As<AggregationOperator>(op);
-            if (aggregate.key == nullptr) {
+            if (aggregate.keys.empty()) {
                 GlobalAggregationSink sink(downstream, aggregate.aggregations);
                 ExecuteInto(reader, aggregate.child, sink);
             } else {
-                HashAggregationSink sink(downstream, aggregate.key, aggregate.key_name,
-                                         aggregate.aggregations);
+                HashAggregationSink sink(downstream, aggregate.keys, aggregate.aggregations);
                 ExecuteInto(reader, aggregate.child, sink);
             }
             return;
