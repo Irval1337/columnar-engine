@@ -83,18 +83,16 @@ struct CountTableOperator final : public Operator {
 };
 
 struct AggregationOperator final : public Operator {
-    AggregationOperator(std::shared_ptr<Operator> child, std::shared_ptr<Expression> key,
-                        std::string key_name, std::vector<AggregationUnit> aggregations)
+    AggregationOperator(std::shared_ptr<Operator> child, std::vector<ProjectionUnit> keys,
+                        std::vector<AggregationUnit> aggregations)
         : Operator(OperatorType::Aggregation),
           child(std::move(child)),
-          key(std::move(key)),
-          key_name(std::move(key_name)),
+          keys(std::move(keys)),
           aggregations(std::move(aggregations)) {
     }
 
     std::shared_ptr<Operator> child;
-    std::shared_ptr<Expression> key;
-    std::string key_name;
+    std::vector<ProjectionUnit> keys;  // empty => global aggregation
     std::vector<AggregationUnit> aggregations;
 };
 
@@ -141,15 +139,15 @@ inline std::shared_ptr<CountTableOperator> MakeCountTable(std::string output_nam
 }
 
 inline std::shared_ptr<AggregationOperator> MakeAggregation(
-    std::shared_ptr<Operator> child, std::shared_ptr<Expression> key, std::string key_name,
+    std::shared_ptr<Operator> child, std::vector<ProjectionUnit> keys,
     std::vector<AggregationUnit> aggregations) {
-    return std::make_shared<AggregationOperator>(std::move(child), std::move(key),
-                                                 std::move(key_name), std::move(aggregations));
+    return std::make_shared<AggregationOperator>(std::move(child), std::move(keys),
+                                                 std::move(aggregations));
 }
 
 inline std::shared_ptr<AggregationOperator> MakeGlobalAggregation(
     std::shared_ptr<Operator> child, std::vector<AggregationUnit> aggregations) {
-    return MakeAggregation(std::move(child), nullptr, std::string(), std::move(aggregations));
+    return MakeAggregation(std::move(child), {}, std::move(aggregations));
 }
 
 inline std::shared_ptr<FilterOperator> MakeFilter(std::shared_ptr<Operator> child,
@@ -163,10 +161,17 @@ inline std::shared_ptr<ProjectOperator> MakeProject(std::shared_ptr<Operator> ch
 }
 
 inline std::shared_ptr<AggregationOperator> MakeHashAggregation(
+    std::shared_ptr<Operator> child, std::vector<ProjectionUnit> keys,
+    std::vector<AggregationUnit> aggregations) {
+    return MakeAggregation(std::move(child), std::move(keys), std::move(aggregations));
+}
+
+inline std::shared_ptr<AggregationOperator> MakeHashAggregation(
     std::shared_ptr<Operator> child, std::shared_ptr<Expression> key, std::string key_name,
     std::vector<AggregationUnit> aggregations) {
-    return MakeAggregation(std::move(child), std::move(key), std::move(key_name),
-                           std::move(aggregations));
+    std::vector<ProjectionUnit> keys;
+    keys.push_back(ProjectionUnit{std::move(key), std::move(key_name)});
+    return MakeAggregation(std::move(child), std::move(keys), std::move(aggregations));
 }
 
 inline std::shared_ptr<TopNOperator> MakeTopN(std::shared_ptr<Operator> child,

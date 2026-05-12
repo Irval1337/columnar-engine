@@ -174,6 +174,34 @@ std::unique_ptr<core::Column> CompareDispatch(const core::Column& lhs, const cor
     return CompareIntegers(lhs, rhs, cmp);
 }
 
+std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core::Column& rhs,
+                                            bool subtract) {
+    size_t rows = lhs.Size();
+    if (rhs.Size() != rows) {
+        THROW_RUNTIME_ERROR("Arithmetic: row count mismatch");
+    }
+    auto out = std::make_unique<core::Int64Column>(lhs.IsNullable() || rhs.IsNullable());
+    out->Reserve(rows);
+    VisitIntegerCol(lhs, [&](const auto& l) {
+        VisitIntegerCol(rhs, [&](const auto& r) {
+            const auto& ld = l.GetData();
+            const auto& rd = r.GetData();
+            const util::BitVector* lmask = l.IsNullable() ? &l.GetNullMask() : nullptr;
+            const util::BitVector* rmask = r.IsNullable() ? &r.GetNullMask() : nullptr;
+            for (size_t i = 0; i < rows; ++i) {
+                if ((lmask && lmask->Get(i)) || (rmask && rmask->Get(i))) {
+                    out->AppendNull();
+                    continue;
+                }
+                auto a = static_cast<int64_t>(ld[i]);
+                auto b = static_cast<int64_t>(rd[i]);
+                out->Append(subtract ? a - b : a + b);
+            }
+        });
+    });
+    return out;
+}
+
 template <typename Col>
 void FilterNumeric(const Col& src, const core::BoolColumn& mask, Col& dst) {
     const auto& data = src.GetData();
@@ -200,7 +228,7 @@ void FilterNumeric(const Col& src, const core::BoolColumn& mask, Col& dst) {
 }
 
 void FilterString(const core::StringColumn& src, const core::BoolColumn& mask,
-                      core::StringColumn& dst) {
+                  core::StringColumn& dst) {
     const auto& m = mask.GetData();
     size_t rows = src.Size();
     for (size_t i = 0; i < rows; ++i) {
@@ -215,8 +243,7 @@ void FilterString(const core::StringColumn& src, const core::BoolColumn& mask,
     }
 }
 
-void FilterBool(const core::BoolColumn& src, const core::BoolColumn& mask,
-                    core::BoolColumn& dst) {
+void FilterBool(const core::BoolColumn& src, const core::BoolColumn& mask, core::BoolColumn& dst) {
     const auto& m = mask.GetData();
     size_t rows = src.Size();
     for (size_t i = 0; i < rows; ++i) {
@@ -235,31 +262,31 @@ void FilterColumn(const core::Column& src, const core::BoolColumn& mask, core::C
     switch (src.GetDataType()) {
         case core::DataType::Int16:
             return FilterNumeric(static_cast<const core::Int16Column&>(src), mask,
-                                     static_cast<core::Int16Column&>(dst));
+                                 static_cast<core::Int16Column&>(dst));
         case core::DataType::Int32:
             return FilterNumeric(static_cast<const core::Int32Column&>(src), mask,
-                                     static_cast<core::Int32Column&>(dst));
+                                 static_cast<core::Int32Column&>(dst));
         case core::DataType::Int64:
             return FilterNumeric(static_cast<const core::Int64Column&>(src), mask,
-                                     static_cast<core::Int64Column&>(dst));
+                                 static_cast<core::Int64Column&>(dst));
         case core::DataType::Double:
             return FilterNumeric(static_cast<const core::DoubleColumn&>(src), mask,
-                                     static_cast<core::DoubleColumn&>(dst));
+                                 static_cast<core::DoubleColumn&>(dst));
         case core::DataType::Date:
             return FilterNumeric(static_cast<const core::DateColumn&>(src), mask,
-                                     static_cast<core::DateColumn&>(dst));
+                                 static_cast<core::DateColumn&>(dst));
         case core::DataType::Timestamp:
             return FilterNumeric(static_cast<const core::TimestampColumn&>(src), mask,
-                                     static_cast<core::TimestampColumn&>(dst));
+                                 static_cast<core::TimestampColumn&>(dst));
         case core::DataType::Char:
             return FilterNumeric(static_cast<const core::CharColumn&>(src), mask,
-                                     static_cast<core::CharColumn&>(dst));
+                                 static_cast<core::CharColumn&>(dst));
         case core::DataType::String:
             return FilterString(static_cast<const core::StringColumn&>(src), mask,
-                                    static_cast<core::StringColumn&>(dst));
+                                static_cast<core::StringColumn&>(dst));
         case core::DataType::Bool:
             return FilterBool(static_cast<const core::BoolColumn&>(src), mask,
-                                  static_cast<core::BoolColumn&>(dst));
+                              static_cast<core::BoolColumn&>(dst));
     }
     THROW_RUNTIME_ERROR("Unsupported column type for filter");
 }
@@ -365,6 +392,14 @@ std::unique_ptr<core::Column> Or(const core::Column& lhs, const core::Column& rh
     return out;
 }
 
+std::unique_ptr<core::Column> Add(const core::Column& lhs, const core::Column& rhs) {
+    return ArithmeticInt(lhs, rhs, false);
+}
+
+std::unique_ptr<core::Column> Subtract(const core::Column& lhs, const core::Column& rhs) {
+    return ArithmeticInt(lhs, rhs, true);
+}
+
 std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::string_view substring,
                                           bool negated) {
     if (operand.GetDataType() != core::DataType::String) {
@@ -402,8 +437,7 @@ ScalarReduction<int64_t> SumInt(const core::Column& col) {
 }
 
 ScalarReduction<long double> SumDouble(const core::Column& col) {
-    return VisitNumericCol(col,
-                           [](const auto& typed) { return SumImpl<long double>(typed); });
+    return VisitNumericCol(col, [](const auto& typed) { return SumImpl<long double>(typed); });
 }
 
 ScalarReduction<int64_t> MinInt(const core::Column& col) {
@@ -454,13 +488,11 @@ ScalarReduction<std::string> MinMaxStringImpl(const core::Column& col, Better be
 }  // namespace
 
 ScalarReduction<std::string> MinString(const core::Column& col) {
-    return MinMaxStringImpl(col,
-                                  [](std::string_view a, std::string_view b) { return a < b; });
+    return MinMaxStringImpl(col, [](std::string_view a, std::string_view b) { return a < b; });
 }
 
 ScalarReduction<std::string> MaxString(const core::Column& col) {
-    return MinMaxStringImpl(col,
-                                  [](std::string_view a, std::string_view b) { return a > b; });
+    return MinMaxStringImpl(col, [](std::string_view a, std::string_view b) { return a > b; });
 }
 
 AvgPartial Avg(const core::Column& col) {

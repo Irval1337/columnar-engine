@@ -25,6 +25,9 @@ std::unique_ptr<core::Column> GreaterOrEqual(const core::Column& lhs, const core
 std::unique_ptr<core::Column> And(const core::Column& lhs, const core::Column& rhs);
 std::unique_ptr<core::Column> Or(const core::Column& lhs, const core::Column& rhs);
 
+std::unique_ptr<core::Column> Add(const core::Column& lhs, const core::Column& rhs);
+std::unique_ptr<core::Column> Subtract(const core::Column& lhs, const core::Column& rhs);
+
 std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::string_view substring,
                                           bool negated);
 

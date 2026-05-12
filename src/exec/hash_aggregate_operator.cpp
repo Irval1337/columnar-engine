@@ -23,40 +23,48 @@ core::DataType KeyOutputType(const Expression& expr) {
     THROW_RUNTIME_ERROR("GROUP BY key must be integer or string");
 }
 
-core::Schema MakeHashAggregateSchema(const Expression& key, const std::string& key_name,
+core::Schema MakeHashAggregateSchema(const std::vector<ProjectionUnit>& keys,
                                      const std::vector<AggregationUnit>& aggregations) {
     std::vector<core::Field> fields;
-    fields.reserve(aggregations.size() + 1);
-    fields.emplace_back(key_name, KeyOutputType(key), false);
+    fields.reserve(keys.size() + aggregations.size());
+    for (auto& key : keys) {
+        fields.emplace_back(key.name, KeyOutputType(*key.expression), false);
+    }
     auto aggregation_schema = MakeAggregationSchema(aggregations);
     for (auto& field : aggregation_schema.GetFields()) {
         fields.push_back(field);
     }
     return core::Schema(std::move(fields));
 }
+
+void HashCombine(size_t& seed, size_t value) noexcept {
+    seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+}
 }  // namespace
 
-size_t HashAggregationSink::GroupKeyHash::operator()(const GroupKey& k) const noexcept {
-    return std::visit(
-        [](const auto& value) {
-            using T = std::decay_t<decltype(value)>;
-            if constexpr (std::is_same_v<T, int64_t>) {
-                return std::hash<int64_t>{}(value);
-            } else {
-                return std::hash<std::string>{}(value);
-            }
-        },
-        k);
+size_t HashAggregationSink::GroupKeyHash::operator()(const GroupKey& key) const noexcept {
+    size_t seed = key.size();
+    for (auto& component : key) {
+        std::visit(
+            [&](const auto& value) {
+                using T = std::decay_t<decltype(value)>;
+                if constexpr (std::is_same_v<T, int64_t>) {
+                    HashCombine(seed, std::hash<int64_t>{}(value));
+                } else {
+                    HashCombine(seed, std::hash<std::string>{}(value));
+                }
+            },
+            component);
+    }
+    return seed;
 }
 
-HashAggregationSink::HashAggregationSink(IOperator& downstream, std::shared_ptr<Expression> key,
-                                         std::string key_name,
+HashAggregationSink::HashAggregationSink(IOperator& downstream, std::vector<ProjectionUnit> keys,
                                          std::vector<AggregationUnit> aggregations)
     : downstream_(downstream),
-      key_(std::move(key)),
-      key_name_(std::move(key_name)),
+      keys_(std::move(keys)),
       aggregations_(std::move(aggregations)),
-      output_schema_(MakeHashAggregateSchema(*key_, key_name_, aggregations_)) {
+      output_schema_(MakeHashAggregateSchema(keys_, aggregations_)) {
 }
 
 void HashAggregationSink::Consume(core::Batch batch) {
@@ -65,33 +73,51 @@ void HashAggregationSink::Consume(core::Batch batch) {
         return;
     }
 
-    auto key_eval = Evaluate(batch, *key_);
-    auto& key_col = key_eval.Get();
+    std::vector<EvalResult> key_evals;
+    key_evals.reserve(keys_.size());
+    std::vector<const core::Column*> key_cols;
+    key_cols.reserve(keys_.size());
+    for (auto& key : keys_) {
+        key_evals.emplace_back(Evaluate(batch, *key.expression));
+        key_cols.push_back(&key_evals.back().Get());
+    }
 
-    std::vector<EvalResult> evals;
-    evals.reserve(aggregations_.size());
+    std::vector<EvalResult> agg_evals;
+    agg_evals.reserve(aggregations_.size());
     std::vector<const core::Column*> agg_cols(aggregations_.size(), nullptr);
     for (size_t i = 0; i < aggregations_.size(); ++i) {
         if (aggregations_[i].type == AggregationType::Count) {
             continue;
         }
-        evals.emplace_back(Evaluate(batch, *aggregations_[i].expression));
-        agg_cols[i] = &evals.back().Get();
+        agg_evals.emplace_back(Evaluate(batch, *aggregations_[i].expression));
+        agg_cols[i] = &agg_evals.back().Get();
     }
 
-    bool string_key = key_col.GetDataType() == core::DataType::String;
-
+    GroupKey key;
+    key.reserve(key_cols.size());
     for (size_t row = 0; row < rows; ++row) {
-        if (key_col.IsNull(row)) {
+        key.clear();
+        bool has_null_key = false;
+        for (auto* col : key_cols) {
+            if (col->IsNull(row)) {
+                has_null_key = true;
+                break;
+            }
+            if (col->GetDataType() == core::DataType::String) {
+                key.emplace_back(std::string(ReadStringRow(*col, row)));
+            } else {
+                key.emplace_back(ReadIntegerRow(*col, row));
+            }
+        }
+        if (has_null_key) {
             continue;
         }
 
-        GroupKey key = string_key ? GroupKey{std::string(ReadStringRow(key_col, row))}
-                                  : GroupKey{ReadIntegerRow(key_col, row)};
-        auto& states = groups_[std::move(key)];
-        if (states.empty()) {
-            states = MakeAggregationStates(aggregations_);
+        auto it = groups_.find(key);
+        if (it == groups_.end()) {
+            it = groups_.emplace(key, MakeAggregationStates(aggregations_)).first;
         }
+        auto& states = it->second;
         for (size_t i = 0; i < aggregations_.size(); ++i) {
             auto& unit = aggregations_[i];
             if (unit.type == AggregationType::Count) {
@@ -105,21 +131,23 @@ void HashAggregationSink::Consume(core::Batch batch) {
 
 void HashAggregationSink::Finalize() {
     core::Batch out(output_schema_, groups_.size());
-    auto& key_out = out.ColumnAt(0);
 
     for (auto& [key, states] : groups_) {
-        std::visit(
-            [&](const auto& value) {
-                using T = std::decay_t<decltype(value)>;
-                if constexpr (std::is_same_v<T, int64_t>) {
-                    AppendInteger(key_out, value);
-                } else {
-                    static_cast<core::StringColumn&>(key_out).Append(value);
-                }
-            },
-            key);
+        for (size_t i = 0; i < keys_.size(); ++i) {
+            auto& key_out = out.ColumnAt(i);
+            std::visit(
+                [&](const auto& value) {
+                    using T = std::decay_t<decltype(value)>;
+                    if constexpr (std::is_same_v<T, int64_t>) {
+                        AppendInteger(key_out, value);
+                    } else {
+                        static_cast<core::StringColumn&>(key_out).Append(value);
+                    }
+                },
+                key[i]);
+        }
         for (size_t i = 0; i < aggregations_.size(); ++i) {
-            AppendAggregationResult(states[i], aggregations_[i], out.ColumnAt(i + 1));
+            AppendAggregationResult(states[i], aggregations_[i], out.ColumnAt(keys_.size() + i));
         }
     }
 

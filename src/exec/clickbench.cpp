@@ -4,8 +4,11 @@
 #include <util/date_time.h>
 #include <util/macro.h>
 
+#include <cstdint>
+#include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace columnar::exec {
 namespace {
@@ -28,6 +31,14 @@ std::shared_ptr<Expression> NotEmpty(const core::Schema& schema, std::string nam
 
 std::shared_ptr<Expression> DateConst(std::string_view date) {
     return MakeConst(static_cast<int64_t>(util::ParseDate(date)));
+}
+
+std::shared_ptr<Expression> Plus(std::shared_ptr<Expression> lhs, int64_t value) {
+    return MakeBinary(BinaryFunction::Plus, std::move(lhs), MakeConst(value));
+}
+
+std::shared_ptr<Expression> Minus(std::shared_ptr<Expression> lhs, int64_t value) {
+    return MakeBinary(BinaryFunction::Minus, std::move(lhs), MakeConst(value));
 }
 }  // namespace
 
@@ -55,12 +66,20 @@ std::shared_ptr<Operator> QueryMaker::Make(size_t query_id) const {
             return MakeQ9();
         case 10:
             return MakeQ10();
+        case 11:
+            return MakeQ11();
         case 12:
             return MakeQ12();
         case 13:
             return MakeQ13();
+        case 14:
+            return MakeQ14();
         case 15:
             return MakeQ15();
+        case 16:
+            return MakeQ16();
+        case 17:
+            return MakeQ17();
         case 19:
             return MakeQ19();
         case 20:
@@ -75,8 +94,20 @@ std::shared_ptr<Operator> QueryMaker::Make(size_t query_id) const {
             return MakeQ25();
         case 26:
             return MakeQ26();
+        case 29:
+            return MakeQ29();
+        case 30:
+            return MakeQ30();
+        case 31:
+            return MakeQ31();
+        case 32:
+            return MakeQ32();
         case 33:
             return MakeQ33();
+        case 34:
+            return MakeQ34();
+        case 35:
+            return MakeQ35();
         case 36:
             return MakeQ36();
         case 37:
@@ -175,6 +206,19 @@ std::shared_ptr<Operator> QueryMaker::MakeQ10() const {
                     10);
 }
 
+std::shared_ptr<Operator> QueryMaker::MakeQ11() const {
+    // SELECT MobilePhone, MobilePhoneModel, COUNT(DISTINCT UserID) AS u FROM hits
+    // WHERE MobilePhoneModel <> '' GROUP BY MobilePhone, MobilePhoneModel
+    // ORDER BY u DESC LIMIT 10;
+    auto agg = MakeHashAggregation(
+        MakeFilter(MakeScan(), NotEmpty(table_schema_, "MobilePhoneModel")),
+        {ProjectionUnit{ColumnRef(table_schema_, "MobilePhone"), "MobilePhone"},
+         ProjectionUnit{ColumnRef(table_schema_, "MobilePhoneModel"), "MobilePhoneModel"}},
+        {Distinct(ColumnRef(table_schema_, "UserID"), "u")});
+    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("u", core::DataType::Int64), false}},
+                    10);
+}
+
 std::shared_ptr<Operator> QueryMaker::MakeQ12() const {
     // SELECT SearchPhrase, COUNT(*) AS c FROM hits WHERE SearchPhrase <> ''
     // GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10;
@@ -197,12 +241,49 @@ std::shared_ptr<Operator> QueryMaker::MakeQ13() const {
                     10);
 }
 
+std::shared_ptr<Operator> QueryMaker::MakeQ14() const {
+    // SELECT SearchEngineID, SearchPhrase, COUNT(*) AS c FROM hits WHERE SearchPhrase <> ''
+    // GROUP BY SearchEngineID, SearchPhrase ORDER BY c DESC LIMIT 10;
+    auto agg = MakeHashAggregation(
+        MakeFilter(MakeScan(), NotEmpty(table_schema_, "SearchPhrase")),
+        {ProjectionUnit{ColumnRef(table_schema_, "SearchEngineID"), "SearchEngineID"},
+         ProjectionUnit{ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase"}},
+        {Count("c")});
+    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
+                    10);
+}
+
 std::shared_ptr<Operator> QueryMaker::MakeQ15() const {
     // SELECT UserID, COUNT(*) FROM hits GROUP BY UserID ORDER BY COUNT(*) DESC LIMIT 10;
     auto agg = MakeHashAggregation(MakeScan(), ColumnRef(table_schema_, "UserID"), "UserID",
                                    {Count("count")});
     return MakeTopN(std::move(agg),
                     {SortUnit{MakeColumnExpr("count", core::DataType::Int64), false}}, 10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ16() const {
+    // SELECT UserID, SearchPhrase, COUNT(*) FROM hits GROUP BY UserID, SearchPhrase
+    // ORDER BY COUNT(*) DESC LIMIT 10;
+    auto agg = MakeHashAggregation(
+        MakeScan(),
+        {ProjectionUnit{ColumnRef(table_schema_, "UserID"), "UserID"},
+         ProjectionUnit{ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase"}},
+        {Count("count")});
+    return MakeTopN(std::move(agg),
+                    {SortUnit{MakeColumnExpr("count", core::DataType::Int64), false}}, 10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ17() const {
+    // SELECT UserID, SearchPhrase, COUNT(*) FROM hits GROUP BY UserID, SearchPhrase LIMIT 10;
+    auto agg = MakeHashAggregation(
+        MakeScan(),
+        {ProjectionUnit{ColumnRef(table_schema_, "UserID"), "UserID"},
+         ProjectionUnit{ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase"}},
+        {Count("count")});
+    return MakeTopN(std::move(agg),
+                    {SortUnit{MakeColumnExpr("UserID", core::DataType::Int64), true},
+                     SortUnit{MakeColumnExpr("SearchPhrase", core::DataType::String), true}},
+                    10);
 }
 
 std::shared_ptr<Operator> QueryMaker::MakeQ19() const {
@@ -301,10 +382,87 @@ std::shared_ptr<Operator> QueryMaker::MakeQ26() const {
                         ProjectionUnit{ColumnRef(table_schema_, "EventTime"), "EventTime"}});
 }
 
+std::shared_ptr<Operator> QueryMaker::MakeQ29() const {
+    // SELECT SUM(ResolutionWidth), SUM(ResolutionWidth + 1), ..., SUM(ResolutionWidth + 89)
+    // FROM hits;
+    std::vector<AggregationUnit> aggregations;
+    aggregations.reserve(90);
+    aggregations.push_back(Sum(ColumnRef(table_schema_, "ResolutionWidth"), "sum0"));
+    for (int64_t shift = 1; shift < 90; ++shift) {
+        aggregations.push_back(Sum(Plus(ColumnRef(table_schema_, "ResolutionWidth"), shift),
+                                   "sum" + std::to_string(shift)));
+    }
+    return MakeGlobalAggregation(MakeScan(), std::move(aggregations));
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ30() const {
+    // SELECT SearchEngineID, ClientIP, COUNT(*) AS c, SUM(IsRefresh), AVG(ResolutionWidth)
+    // FROM hits WHERE SearchPhrase <> '' GROUP BY SearchEngineID, ClientIP
+    // ORDER BY c DESC LIMIT 10;
+    auto agg = MakeHashAggregation(
+        MakeFilter(MakeScan(), NotEmpty(table_schema_, "SearchPhrase")),
+        {ProjectionUnit{ColumnRef(table_schema_, "SearchEngineID"), "SearchEngineID"},
+         ProjectionUnit{ColumnRef(table_schema_, "ClientIP"), "ClientIP"}},
+        {Count("c"), Sum(ColumnRef(table_schema_, "IsRefresh"), "sum_is_refresh"),
+         Avg(ColumnRef(table_schema_, "ResolutionWidth"), "avg")});
+    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
+                    10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ31() const {
+    // SELECT WatchID, ClientIP, COUNT(*) AS c, SUM(IsRefresh), AVG(ResolutionWidth) FROM hits
+    // WHERE SearchPhrase <> '' GROUP BY WatchID, ClientIP ORDER BY c DESC LIMIT 10;
+    auto agg = MakeHashAggregation(
+        MakeFilter(MakeScan(), NotEmpty(table_schema_, "SearchPhrase")),
+        {ProjectionUnit{ColumnRef(table_schema_, "WatchID"), "WatchID"},
+         ProjectionUnit{ColumnRef(table_schema_, "ClientIP"), "ClientIP"}},
+        {Count("c"), Sum(ColumnRef(table_schema_, "IsRefresh"), "sum_is_refresh"),
+         Avg(ColumnRef(table_schema_, "ResolutionWidth"), "avg")});
+    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
+                    10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ32() const {
+    // SELECT WatchID, ClientIP, COUNT(*) AS c, SUM(IsRefresh), AVG(ResolutionWidth) FROM hits
+    // GROUP BY WatchID, ClientIP ORDER BY c DESC LIMIT 10;
+    auto agg = MakeHashAggregation(
+        MakeScan(),
+        {ProjectionUnit{ColumnRef(table_schema_, "WatchID"), "WatchID"},
+         ProjectionUnit{ColumnRef(table_schema_, "ClientIP"), "ClientIP"}},
+        {Count("c"), Sum(ColumnRef(table_schema_, "IsRefresh"), "sum_is_refresh"),
+         Avg(ColumnRef(table_schema_, "ResolutionWidth"), "avg")});
+    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
+                    10);
+}
+
 std::shared_ptr<Operator> QueryMaker::MakeQ33() const {
     // SELECT URL, COUNT(*) AS c FROM hits GROUP BY URL ORDER BY c DESC LIMIT 10;
     auto agg =
         MakeHashAggregation(MakeScan(), ColumnRef(table_schema_, "URL"), "URL", {Count("c")});
+    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
+                    10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ34() const {
+    // SELECT 1, URL, COUNT(*) AS c FROM hits GROUP BY 1, URL ORDER BY c DESC LIMIT 10;
+    auto agg = MakeHashAggregation(MakeScan(),
+                                   {ProjectionUnit{MakeConst(static_cast<int64_t>(1)), "1"},
+                                    ProjectionUnit{ColumnRef(table_schema_, "URL"), "URL"}},
+                                   {Count("c")});
+    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
+                    10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ35() const {
+    // SELECT ClientIP, ClientIP - 1, ClientIP - 2, ClientIP - 3, COUNT(*) AS c FROM hits
+    // GROUP BY ClientIP, ClientIP - 1, ClientIP - 2, ClientIP - 3 ORDER BY c DESC LIMIT 10;
+    auto agg = MakeHashAggregation(
+        MakeScan(),
+        {ProjectionUnit{ColumnRef(table_schema_, "ClientIP"), "ClientIP"},
+         ProjectionUnit{Minus(ColumnRef(table_schema_, "ClientIP"), 1), "ClientIP_1"},
+         ProjectionUnit{Minus(ColumnRef(table_schema_, "ClientIP"), 2), "ClientIP_2"},
+         ProjectionUnit{Minus(ColumnRef(table_schema_, "ClientIP"), 3), "ClientIP_3"}},
+        {Count("c")});
     return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
                     10);
 }

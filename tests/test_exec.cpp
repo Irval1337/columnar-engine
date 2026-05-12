@@ -3,6 +3,7 @@
 #include <exec/clickbench.h>
 #include <exec/operator.h>
 
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -24,14 +25,19 @@ core::Schema ClickBenchMiniSchema() {
                          core::Field("EventTime", core::DataType::Timestamp),
                          core::Field("CounterID", core::DataType::Int64),
                          core::Field("DontCountHits", core::DataType::Int64),
-                         core::Field("IsRefresh", core::DataType::Int64)});
+                         core::Field("IsRefresh", core::DataType::Int64),
+                         core::Field("MobilePhone", core::DataType::Int64),
+                         core::Field("SearchEngineID", core::DataType::Int64),
+                         core::Field("ClientIP", core::DataType::Int64),
+                         core::Field("WatchID", core::DataType::Int64)});
 }
 
 void AppendRow(core::Batch& batch, int64_t adv, int64_t width, int64_t user, int64_t region,
                std::string_view search_phrase, std::string_view event_date, std::string_view url,
                std::string_view mobile_phone_model, std::string_view title,
                std::string_view event_time, int64_t counter_id, int64_t dont_count_hits,
-               int64_t is_refresh) {
+               int64_t is_refresh, int64_t mobile_phone, int64_t search_engine_id,
+               int64_t client_ip, int64_t watch_id) {
     batch.ColumnAt(0).AppendFromString(std::to_string(adv));
     batch.ColumnAt(1).AppendFromString(std::to_string(width));
     batch.ColumnAt(2).AppendFromString(std::to_string(user));
@@ -45,6 +51,10 @@ void AppendRow(core::Batch& batch, int64_t adv, int64_t width, int64_t user, int
     batch.ColumnAt(10).AppendFromString(std::to_string(counter_id));
     batch.ColumnAt(11).AppendFromString(std::to_string(dont_count_hits));
     batch.ColumnAt(12).AppendFromString(std::to_string(is_refresh));
+    batch.ColumnAt(13).AppendFromString(std::to_string(mobile_phone));
+    batch.ColumnAt(14).AppendFromString(std::to_string(search_engine_id));
+    batch.ColumnAt(15).AppendFromString(std::to_string(client_ip));
+    batch.ColumnAt(16).AppendFromString(std::to_string(watch_id));
 }
 
 std::stringstream MakeClickBenchMiniFile() {
@@ -54,11 +64,11 @@ std::stringstream MakeClickBenchMiniFile() {
         bruh::BruhBatchWriter writer(ss, schema);
         core::Batch batch(schema);
         AppendRow(batch, 0, 100, 10, 1, "alpha", "2013-07-02", "example.com", "iPhone", "Example",
-                  "2013-07-02 10:00:00", 62, 0, 0);
+                  "2013-07-02 10:00:00", 62, 0, 0, 1, 2, 1000, 7);
         AppendRow(batch, 1, 200, 10, 1, "beta", "2013-07-01", "google.com", "Pixel", "Google News",
-                  "2013-07-01 09:00:00", 62, 0, 0);
+                  "2013-07-01 09:00:00", 62, 0, 0, 1, 3, 1000, 8);
         AppendRow(batch, 2, 300, 20, 2, "alpha", "2013-07-03", "https://google.org/path", "iPhone",
-                  "Other", "2013-07-03 08:00:00", 63, 0, 0);
+                  "Other", "2013-07-03 08:00:00", 63, 0, 0, 2, 2, 2000, 8);
         writer.Write(batch);
         writer.Flush();
     }
@@ -146,7 +156,7 @@ TEST(ClickBenchQueries, MinMaxEventDate) {
 
 TEST(ClickBenchQueries, UnsupportedQueryThrows) {
     auto ss = MakeClickBenchMiniFile();
-    EXPECT_THROW(exec::ExecuteClickBenchQuery(ss, 11), std::runtime_error);
+    EXPECT_THROW(exec::ExecuteClickBenchQuery(ss, 18), std::runtime_error);
 }
 
 TEST(ProjectOperator, RenameColumn) {
@@ -409,4 +419,169 @@ TEST(ClickBenchQueries, Q37PageViewsPerTitle) {
     auto result = RunMiniQuery(37);
     EXPECT_EQ(result.RowsCount(), 2);
     EXPECT_EQ(result.GetSchema().GetFields()[1].name, "PageViews");
+}
+
+TEST(HashAggregation, GroupByTwoKeys) {
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(),
+        {exec::ProjectionUnit{exec::MakeColumnExpr("UserID", core::DataType::Int64), "UserID"},
+         exec::ProjectionUnit{exec::MakeColumnExpr("SearchPhrase", core::DataType::String),
+                              "SearchPhrase"}},
+        {exec::Count("count"),
+         exec::Sum(exec::MakeColumnExpr("ResolutionWidth", core::DataType::Int64), "sum")});
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.ColumnsCount(), 4);
+    ASSERT_EQ(result.RowsCount(), 3);
+    std::set<std::string> seen;
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        auto user = result.ColumnAt(0).GetAsString(row);
+        auto phrase = result.ColumnAt(1).GetAsString(row);
+        auto count = result.ColumnAt(2).GetAsString(row);
+        auto sum = result.ColumnAt(3).GetAsString(row);
+        seen.insert(user + "/" + phrase);
+        EXPECT_EQ(count, "1");
+        if (user == "10" && phrase == "alpha") {
+            EXPECT_EQ(sum, "100");
+        } else if (user == "10" && phrase == "beta") {
+            EXPECT_EQ(sum, "200");
+        } else if (user == "20" && phrase == "alpha") {
+            EXPECT_EQ(sum, "300");
+        } else {
+            FAIL() << "unexpected key: " << user << "/" << phrase;
+        }
+    }
+    EXPECT_EQ(seen, (std::set<std::string>{"10/alpha", "10/beta", "20/alpha"}));
+}
+
+TEST(ClickBenchQueries, Q11DistinctUserPerPhoneAndModel) {
+    auto result = RunMiniQuery(11);
+    ASSERT_EQ(result.ColumnsCount(), 3);
+    ASSERT_EQ(result.RowsCount(), 3);
+    std::set<std::string> seen;
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        seen.insert(result.ColumnAt(0).GetAsString(row) + "/" +
+                    result.ColumnAt(1).GetAsString(row));
+        EXPECT_EQ(result.ColumnAt(2).GetAsString(row), "1");
+    }
+    EXPECT_EQ(seen, (std::set<std::string>{"1/iPhone", "1/Pixel", "2/iPhone"}));
+}
+
+TEST(ClickBenchQueries, Q14CountPerEngineAndPhrase) {
+    auto result = RunMiniQuery(14);
+    ASSERT_EQ(result.RowsCount(), 2);
+    ASSERT_EQ(result.ColumnsCount(), 3);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "2");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "alpha");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "2");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(1), "1");
+}
+
+TEST(ClickBenchQueries, Q16CountPerUserAndPhrase) {
+    auto result = RunMiniQuery(16);
+    ASSERT_EQ(result.RowsCount(), 3);
+    ASSERT_EQ(result.ColumnsCount(), 3);
+    std::set<std::string> seen;
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        seen.insert(result.ColumnAt(0).GetAsString(row) + "/" +
+                    result.ColumnAt(1).GetAsString(row));
+        EXPECT_EQ(result.ColumnAt(2).GetAsString(row), "1");
+    }
+    EXPECT_EQ(seen, (std::set<std::string>{"10/alpha", "10/beta", "20/alpha"}));
+}
+
+TEST(ClickBenchQueries, Q17CountPerUserAndPhraseLimit) {
+    auto result = RunMiniQuery(17);
+    ASSERT_EQ(result.RowsCount(), 3);
+    ASSERT_EQ(result.ColumnsCount(), 3);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "10");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "alpha");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "10");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(1), "beta");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "20");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(2), "alpha");
+}
+
+TEST(ClickBenchQueries, Q29SumResolutionWidthShifted) {
+    auto result = RunMiniQuery(29);
+    ASSERT_EQ(result.ColumnsCount(), 90);
+    ASSERT_EQ(result.RowsCount(), 1);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "600");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "603");
+    EXPECT_EQ(result.ColumnAt(89).GetAsString(0), "867");
+}
+
+TEST(ClickBenchQueries, Q30CountPerEngineAndClientIp) {
+    auto result = RunMiniQuery(30);
+    ASSERT_EQ(result.ColumnsCount(), 5);
+    ASSERT_EQ(result.RowsCount(), 3);
+    std::set<std::string> seen;
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        auto engine = result.ColumnAt(0).GetAsString(row);
+        auto client_ip = result.ColumnAt(1).GetAsString(row);
+        seen.insert(engine + "/" + client_ip);
+        EXPECT_EQ(result.ColumnAt(2).GetAsString(row), "1");
+        EXPECT_EQ(result.ColumnAt(3).GetAsString(row), "0");
+        if (engine == "2" && client_ip == "1000") {
+            EXPECT_EQ(result.ColumnAt(4).GetAsString(row), "100");
+        } else if (engine == "3" && client_ip == "1000") {
+            EXPECT_EQ(result.ColumnAt(4).GetAsString(row), "200");
+        } else if (engine == "2" && client_ip == "2000") {
+            EXPECT_EQ(result.ColumnAt(4).GetAsString(row), "300");
+        } else {
+            FAIL() << "unexpected key: " << engine << "/" << client_ip;
+        }
+    }
+    EXPECT_EQ(seen, (std::set<std::string>{"2/1000", "3/1000", "2/2000"}));
+}
+
+TEST(ClickBenchQueries, Q31CountPerWatchIdAndClientIpWithPhrase) {
+    auto result = RunMiniQuery(31);
+    ASSERT_EQ(result.ColumnsCount(), 5);
+    ASSERT_EQ(result.RowsCount(), 3);
+    std::set<std::string> seen;
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        auto watch_id = result.ColumnAt(0).GetAsString(row);
+        auto client_ip = result.ColumnAt(1).GetAsString(row);
+        seen.insert(watch_id + "/" + client_ip);
+        EXPECT_EQ(result.ColumnAt(2).GetAsString(row), "1");
+        EXPECT_EQ(result.ColumnAt(3).GetAsString(row), "0");
+    }
+    EXPECT_EQ(seen, (std::set<std::string>{"7/1000", "8/1000", "8/2000"}));
+}
+
+TEST(ClickBenchQueries, Q32CountPerWatchIdAndClientIp) {
+    auto result = RunMiniQuery(32);
+    ASSERT_EQ(result.ColumnsCount(), 5);
+    ASSERT_EQ(result.RowsCount(), 3);
+    std::set<std::string> seen;
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        seen.insert(result.ColumnAt(0).GetAsString(row) + "/" +
+                    result.ColumnAt(1).GetAsString(row));
+        EXPECT_EQ(result.ColumnAt(2).GetAsString(row), "1");
+    }
+    EXPECT_EQ(seen, (std::set<std::string>{"7/1000", "8/1000", "8/2000"}));
+}
+
+TEST(ClickBenchQueries, Q34ConstKeyGroupByUrl) {
+    auto result = RunMiniQuery(34);
+    ASSERT_EQ(result.ColumnsCount(), 3);
+    ASSERT_EQ(result.RowsCount(), 3);
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        EXPECT_EQ(result.ColumnAt(0).GetAsString(row), "1");
+        EXPECT_EQ(result.ColumnAt(2).GetAsString(row), "1");
+    }
+}
+
+TEST(ClickBenchQueries, Q35GroupByClientIpArithmetic) {
+    auto result = RunMiniQuery(35);
+    ASSERT_EQ(result.RowsCount(), 2);
+    ASSERT_EQ(result.ColumnsCount(), 5);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "1000");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "999");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "998");
+    EXPECT_EQ(result.ColumnAt(3).GetAsString(0), "997");
+    EXPECT_EQ(result.ColumnAt(4).GetAsString(0), "2");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "2000");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(1), "1999");
+    EXPECT_EQ(result.ColumnAt(4).GetAsString(1), "1");
 }
