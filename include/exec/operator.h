@@ -118,16 +118,18 @@ struct ProjectOperator final : public Operator {
 
 struct TopNOperator final : public Operator {
     TopNOperator(std::shared_ptr<Operator> child, std::vector<SortUnit> sort_units,
-                 std::optional<size_t> limit)
+                 std::optional<size_t> limit, std::optional<size_t> offset)
         : Operator(OperatorType::TopN),
           child(std::move(child)),
           sort_units(std::move(sort_units)),
-          limit(limit) {
+          limit(limit),
+          offset(offset) {
     }
 
     std::shared_ptr<Operator> child;
     std::vector<SortUnit> sort_units;
     std::optional<size_t> limit;
+    std::optional<size_t> offset;
 };
 
 inline std::shared_ptr<ScanOperator> MakeScan() {
@@ -176,8 +178,9 @@ inline std::shared_ptr<AggregationOperator> MakeHashAggregation(
 
 inline std::shared_ptr<TopNOperator> MakeTopN(std::shared_ptr<Operator> child,
                                               std::vector<SortUnit> sort_units,
-                                              std::optional<size_t> limit = std::nullopt) {
-    return std::make_shared<TopNOperator>(std::move(child), std::move(sort_units), limit);
+                                              std::optional<size_t> limit = std::nullopt,
+                                              std::optional<size_t> offset = std::nullopt) {
+    return std::make_shared<TopNOperator>(std::move(child), std::move(sort_units), limit, offset);
 }
 
 std::vector<core::Batch> Execute(bruh::BruhBatchReader& reader, std::shared_ptr<Operator> op);

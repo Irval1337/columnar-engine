@@ -1,13 +1,17 @@
 #include <exec/kernel.h>
 
+#include <core/column_factory.h>
 #include <core/columns/bool_column.h>
 #include <core/columns/char_column.h>
 #include <core/columns/date_column.h>
 #include <core/columns/numeric_column.h>
 #include <core/columns/string_column.h>
 #include <core/columns/timestamp_column.h>
+#include <exec/column_helpers.h>
 #include <util/macro.h>
 
+#include <regex>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -415,6 +419,93 @@ std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::stri
         }
         bool found = s.Get(i).find(substring) != std::string_view::npos;
         out->Append(negated ? !found : found);
+    }
+    return out;
+}
+
+std::unique_ptr<core::Column> StrLength(const core::Column& operand) {
+    if (operand.GetDataType() != core::DataType::String) {
+        THROW_RUNTIME_ERROR("length() operand must be a string column");
+    }
+    auto& s = static_cast<const core::StringColumn&>(operand);
+    size_t rows = s.Size();
+    auto out = std::make_unique<core::Int64Column>(s.IsNullable());
+    out->Reserve(rows);
+    for (size_t i = 0; i < rows; ++i) {
+        if (s.IsNull(i)) {
+            out->AppendNull();
+        } else {
+            out->Append(static_cast<int64_t>(s.Get(i).size()));
+        }
+    }
+    return out;
+}
+
+namespace {
+template <typename Transform>
+std::unique_ptr<core::Column> MapTimestamp(const core::Column& operand, bool to_timestamp,
+                                           Transform&& transform) {
+    if (operand.GetDataType() != core::DataType::Timestamp) {
+        THROW_RUNTIME_ERROR("expected a timestamp column");
+    }
+    size_t rows = operand.Size();
+    std::unique_ptr<core::Column> out =
+        to_timestamp ? std::unique_ptr<core::Column>(
+                           std::make_unique<core::TimestampColumn>(operand.IsNullable()))
+                     : std::unique_ptr<core::Column>(
+                           std::make_unique<core::Int64Column>(operand.IsNullable()));
+    for (size_t i = 0; i < rows; ++i) {
+        if (operand.IsNull(i)) {
+            out->AppendNull();
+        } else {
+            AppendInteger(*out, transform(ReadIntegerRow(operand, i)));
+        }
+    }
+    return out;
+}
+}  // namespace
+
+std::unique_ptr<core::Column> ExtractMinute(const core::Column& operand) {
+    return MapTimestamp(operand, /*to_timestamp=*/false,
+                        [](int64_t seconds) { return (seconds / 60) % 60; });
+}
+
+std::unique_ptr<core::Column> TruncMinute(const core::Column& operand) {
+    return MapTimestamp(operand, /*to_timestamp=*/true,
+                        [](int64_t seconds) { return seconds - seconds % 60; });
+}
+
+std::unique_ptr<core::Column> RegexReplace(const core::Column& operand, const std::regex& regex,
+                                           const std::string& replacement) {
+    if (operand.GetDataType() != core::DataType::String) {
+        THROW_RUNTIME_ERROR("REGEXP_REPLACE operand must be a string column");
+    }
+    auto& s = static_cast<const core::StringColumn&>(operand);
+    size_t rows = s.Size();
+    auto out = std::make_unique<core::StringColumn>(s.IsNullable());
+    for (size_t i = 0; i < rows; ++i) {
+        if (s.IsNull(i)) {
+            out->AppendNull();
+            continue;
+        }
+        auto value = s.Get(i);
+        out->Append(std::regex_replace(std::string(value), regex, replacement));
+    }
+    return out;
+}
+
+std::unique_ptr<core::Column> CaseSelect(const core::BoolColumn& mask,
+                                         const core::Column& when_true,
+                                         const core::Column& when_false) {
+    size_t rows = mask.Size();
+    if (when_true.Size() != rows || when_false.Size() != rows) {
+        THROW_RUNTIME_ERROR("CASE: row count mismatch");
+    }
+    auto out = core::MakeColumn(when_true.GetDataType(),
+                                when_true.IsNullable() || when_false.IsNullable());
+    for (size_t i = 0; i < rows; ++i) {
+        bool take_true = !mask.IsNull(i) && mask.Get(i);
+        AppendRow(*out, take_true ? when_true : when_false, i);
     }
     return out;
 }

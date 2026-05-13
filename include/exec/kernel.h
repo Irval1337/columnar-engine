@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -30,6 +31,15 @@ std::unique_ptr<core::Column> Subtract(const core::Column& lhs, const core::Colu
 
 std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::string_view substring,
                                           bool negated);
+std::unique_ptr<core::Column> StrLength(const core::Column& operand);
+std::unique_ptr<core::Column> ExtractMinute(const core::Column& operand);
+std::unique_ptr<core::Column> TruncMinute(const core::Column& operand);
+std::unique_ptr<core::Column> RegexReplace(const core::Column& operand, const std::regex& regex,
+                                           const std::string& replacement);
+
+std::unique_ptr<core::Column> CaseSelect(const core::BoolColumn& mask,
+                                         const core::Column& when_true,
+                                         const core::Column& when_false);
 
 core::Batch ApplyFilter(const core::Batch& batch, const core::BoolColumn& mask);
 

@@ -1,10 +1,23 @@
 #include <exec/expression.h>
 
+#include <core/columns/bool_column.h>
 #include <exec/kernel.h>
 #include <util/macro.h>
 
 namespace columnar::exec {
 namespace {
+std::unique_ptr<core::Column> EvalFunction(const core::Column& arg, ScalarFunction function) {
+    switch (function) {
+        case ScalarFunction::Length:
+            return kernel::StrLength(arg);
+        case ScalarFunction::ExtractMinute:
+            return kernel::ExtractMinute(arg);
+        case ScalarFunction::TruncMinute:
+            return kernel::TruncMinute(arg);
+    }
+    THROW_RUNTIME_ERROR("Unsupported scalar function");
+}
+
 std::unique_ptr<core::Column> EvalBinary(const core::Column& lhs, const core::Column& rhs,
                                          BinaryFunction function) {
     switch (function) {
@@ -47,6 +60,14 @@ core::DataType GetExpressionType(const Expression& expr) {
                        : core::DataType::Bool;
         case ExpressionType::Contains:
             return core::DataType::Bool;
+        case ExpressionType::Function:
+            return static_cast<const FunctionExpr&>(expr).function == ScalarFunction::TruncMinute
+                       ? core::DataType::Timestamp
+                       : core::DataType::Int64;
+        case ExpressionType::Case:
+            return GetExpressionType(*static_cast<const CaseExpr&>(expr).when_true);
+        case ExpressionType::RegexReplace:
+            return core::DataType::String;
     }
     THROW_RUNTIME_ERROR("Unsupported expression type");
 }
@@ -64,6 +85,19 @@ void CollectColumns(const Expression& expr, std::vector<std::string>& columns) {
         }
         case ExpressionType::Contains:
             CollectColumns(*static_cast<const ContainsExpr&>(expr).expr, columns);
+            return;
+        case ExpressionType::Function:
+            CollectColumns(*static_cast<const FunctionExpr&>(expr).arg, columns);
+            return;
+        case ExpressionType::Case: {
+            auto& case_expr = static_cast<const CaseExpr&>(expr);
+            CollectColumns(*case_expr.cond, columns);
+            CollectColumns(*case_expr.when_true, columns);
+            CollectColumns(*case_expr.when_false, columns);
+            return;
+        }
+        case ExpressionType::RegexReplace:
+            CollectColumns(*static_cast<const RegexReplaceExpr&>(expr).arg, columns);
             return;
         case ExpressionType::ConstInt64:
         case ExpressionType::ConstString:
@@ -93,6 +127,24 @@ EvalResult Evaluate(const core::Batch& batch, const Expression& expr) {
             auto& contains = static_cast<const ContainsExpr&>(expr);
             auto operand = Evaluate(batch, *contains.expr);
             return kernel::StrContains(operand.Get(), contains.substring, contains.negated);
+        }
+        case ExpressionType::Function: {
+            auto& function = static_cast<const FunctionExpr&>(expr);
+            auto arg = Evaluate(batch, *function.arg);
+            return EvalFunction(arg.Get(), function.function);
+        }
+        case ExpressionType::Case: {
+            auto& case_expr = static_cast<const CaseExpr&>(expr);
+            auto cond = Evaluate(batch, *case_expr.cond);
+            auto when_true = Evaluate(batch, *case_expr.when_true);
+            auto when_false = Evaluate(batch, *case_expr.when_false);
+            const auto& mask = static_cast<const core::BoolColumn&>(cond.Get());
+            return kernel::CaseSelect(mask, when_true.Get(), when_false.Get());
+        }
+        case ExpressionType::RegexReplace: {
+            auto& regex_replace = static_cast<const RegexReplaceExpr&>(expr);
+            auto arg = Evaluate(batch, *regex_replace.arg);
+            return kernel::RegexReplace(arg.Get(), regex_replace.regex, regex_replace.replacement);
         }
     }
     THROW_RUNTIME_ERROR("Unsupported expression type");

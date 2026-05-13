@@ -19,7 +19,6 @@ public:
 
 private:
     IOperator& downstream_;
-    core::Schema output_schema_;
     std::vector<ProjectionUnit> projections_;
 };
 }  // namespace columnar::exec

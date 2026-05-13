@@ -5,6 +5,7 @@
 #include <util/macro.h>
 
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -39,6 +40,44 @@ std::shared_ptr<Expression> Plus(std::shared_ptr<Expression> lhs, int64_t value)
 
 std::shared_ptr<Expression> Minus(std::shared_ptr<Expression> lhs, int64_t value) {
     return MakeBinary(BinaryFunction::Minus, std::move(lhs), MakeConst(value));
+}
+
+std::shared_ptr<Expression> Or(std::shared_ptr<Expression> lhs, std::shared_ptr<Expression> rhs) {
+    return MakeBinary(BinaryFunction::Or, std::move(lhs), std::move(rhs));
+}
+
+std::shared_ptr<Expression> Eq(const core::Schema& schema, std::string name, int64_t value) {
+    return MakeBinary(BinaryFunction::Equal, ColumnRef(schema, std::move(name)), MakeConst(value));
+}
+
+std::shared_ptr<Expression> Ne(const core::Schema& schema, std::string name, int64_t value) {
+    return MakeBinary(BinaryFunction::NotEqual, ColumnRef(schema, std::move(name)),
+                      MakeConst(value));
+}
+
+std::shared_ptr<Expression> AndAll(std::initializer_list<std::shared_ptr<Expression>> parts) {
+    std::shared_ptr<Expression> result;
+    for (const auto& part : parts) {
+        result = result ? And(std::move(result), part) : part;
+    }
+    return result;
+}
+
+std::shared_ptr<Expression> DateBetween(const core::Schema& schema, std::string_view lo,
+                                        std::string_view hi) {
+    auto column = ColumnRef(schema, "EventDate");
+    return And(MakeBinary(BinaryFunction::GreaterOrEqual, column, DateConst(lo)),
+               MakeBinary(BinaryFunction::LessOrEqual, column, DateConst(hi)));
+}
+
+std::shared_ptr<Expression> InInts(std::shared_ptr<Expression> expr,
+                                   std::initializer_list<int64_t> values) {
+    std::shared_ptr<Expression> result;
+    for (int64_t value : values) {
+        auto eq = MakeBinary(BinaryFunction::Equal, expr, MakeConst(value));
+        result = result ? Or(std::move(result), std::move(eq)) : std::move(eq);
+    }
+    return result;
 }
 }  // namespace
 
@@ -80,6 +119,8 @@ std::shared_ptr<Operator> QueryMaker::Make(size_t query_id) const {
             return MakeQ16();
         case 17:
             return MakeQ17();
+        case 18:
+            return MakeQ18();
         case 19:
             return MakeQ19();
         case 20:
@@ -88,12 +129,18 @@ std::shared_ptr<Operator> QueryMaker::Make(size_t query_id) const {
             return MakeQ21();
         case 22:
             return MakeQ22();
+        case 23:
+            return MakeQ23();
         case 24:
             return MakeQ24();
         case 25:
             return MakeQ25();
         case 26:
             return MakeQ26();
+        case 27:
+            return MakeQ27();
+        case 28:
+            return MakeQ28();
         case 29:
             return MakeQ29();
         case 30:
@@ -112,6 +159,16 @@ std::shared_ptr<Operator> QueryMaker::Make(size_t query_id) const {
             return MakeQ36();
         case 37:
             return MakeQ37();
+        case 38:
+            return MakeQ38();
+        case 39:
+            return MakeQ39();
+        case 40:
+            return MakeQ40();
+        case 41:
+            return MakeQ41();
+        case 42:
+            return MakeQ42();
         default:
             THROW_RUNTIME_ERROR("Unsupported ClickBench query");
     }
@@ -286,6 +343,30 @@ std::shared_ptr<Operator> QueryMaker::MakeQ17() const {
                     10);
 }
 
+std::shared_ptr<Operator> QueryMaker::MakeQ18() const {
+    // SELECT UserID, extract(minute FROM EventTime) AS m, SearchPhrase, COUNT(*) FROM hits
+    // GROUP BY UserID, m, SearchPhrase ORDER BY COUNT(*) DESC LIMIT 10;
+    auto agg = MakeHashAggregation(
+        MakeScan(),
+        {ProjectionUnit{ColumnRef(table_schema_, "UserID"), "UserID"},
+         ProjectionUnit{
+             MakeFunction(ScalarFunction::ExtractMinute, ColumnRef(table_schema_, "EventTime")),
+             "m"},
+         ProjectionUnit{ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase"}},
+        {Count("count"), Max(ColumnRef(table_schema_, "ClientIP"), "max_client_ip")});
+    auto top = MakeTopN(std::move(agg),
+                        {SortUnit{MakeColumnExpr("count", core::DataType::Int64), false},
+                         SortUnit{MakeColumnExpr("max_client_ip", core::DataType::Int64), false},
+                         SortUnit{MakeColumnExpr("m", core::DataType::Int64), false}},
+                        10);
+    return MakeProject(
+        std::move(top),
+        {ProjectionUnit{MakeColumnExpr("UserID", core::DataType::Int64), "UserID"},
+         ProjectionUnit{MakeColumnExpr("m", core::DataType::Int64), "m"},
+         ProjectionUnit{MakeColumnExpr("SearchPhrase", core::DataType::String), "SearchPhrase"},
+         ProjectionUnit{MakeColumnExpr("count", core::DataType::Int64), "count"}});
+}
+
 std::shared_ptr<Operator> QueryMaker::MakeQ19() const {
     // SELECT UserID FROM hits WHERE UserID = 435090932899640449;
     auto user_id = ColumnRef(table_schema_, "UserID");
@@ -351,6 +432,19 @@ std::shared_ptr<Operator> QueryMaker::MakeQ22() const {
          ProjectionUnit{MakeColumnExpr("distinct_u", core::DataType::Int64), "distinct_u"}});
 }
 
+std::shared_ptr<Operator> QueryMaker::MakeQ23() const {
+    // SELECT WatchID, toDateTime(EventTime) AS EventTime, URL, Title FROM hits
+    // WHERE URL LIKE '%google%' ORDER BY EventTime LIMIT 10;
+    auto top =
+        MakeTopN(MakeFilter(MakeScan(), MakeContains(ColumnRef(table_schema_, "URL"), "google")),
+                 {SortUnit{ColumnRef(table_schema_, "EventTime"), true}}, 10);
+    return MakeProject(std::move(top),
+                       {ProjectionUnit{ColumnRef(table_schema_, "WatchID"), "WatchID"},
+                        ProjectionUnit{ColumnRef(table_schema_, "EventTime"), "EventTime"},
+                        ProjectionUnit{ColumnRef(table_schema_, "URL"), "URL"},
+                        ProjectionUnit{ColumnRef(table_schema_, "Title"), "Title"}});
+}
+
 std::shared_ptr<Operator> QueryMaker::MakeQ24() const {
     // SELECT SearchPhrase, toDateTime(EventTime) AS EventTime FROM hits
     // WHERE SearchPhrase <> '' ORDER BY EventTime LIMIT 10;
@@ -380,6 +474,38 @@ std::shared_ptr<Operator> QueryMaker::MakeQ26() const {
     return MakeProject(std::move(top),
                        {ProjectionUnit{ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase"},
                         ProjectionUnit{ColumnRef(table_schema_, "EventTime"), "EventTime"}});
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ27() const {
+    // SELECT CounterID, AVG(length(URL)) AS l, COUNT(*) AS c FROM hits WHERE URL <> ''
+    // GROUP BY CounterID HAVING COUNT(*) > 100000 ORDER BY l DESC LIMIT 25;
+    auto agg = MakeHashAggregation(
+        MakeFilter(MakeScan(), NotEmpty(table_schema_, "URL")),
+        ColumnRef(table_schema_, "CounterID"), "CounterID",
+        {Avg(MakeFunction(ScalarFunction::Length, ColumnRef(table_schema_, "URL")), "l"),
+         Count("c")});
+    auto having = MakeFilter(std::move(agg), MakeBinary(BinaryFunction::Greater,
+                                                        MakeColumnExpr("c", core::DataType::Int64),
+                                                        MakeConst(static_cast<int64_t>(100000))));
+    return MakeTopN(std::move(having),
+                    {SortUnit{MakeColumnExpr("l", core::DataType::Int64), false}}, 25);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ28() const {
+    // SELECT REGEXP_REPLACE(Referer, '^https?://(?:www\.)?([^/]+)/.*$', '\1') AS k,
+    // AVG(length(Referer)) AS l, COUNT(*) AS c, MIN(Referer) FROM hits WHERE Referer <> ''
+    // GROUP BY k HAVING COUNT(*) > 100000 ORDER BY l DESC LIMIT 25;
+    auto key = MakeRegexReplace(ColumnRef(table_schema_, "Referer"),
+                                R"(^https?://(?:www\.)?([^/]+)/.*$)", R"(\1)");
+    auto agg = MakeHashAggregation(
+        MakeFilter(MakeScan(), NotEmpty(table_schema_, "Referer")), {ProjectionUnit{key, "k"}},
+        {Avg(MakeFunction(ScalarFunction::Length, ColumnRef(table_schema_, "Referer")), "l"),
+         Count("c"), Min(ColumnRef(table_schema_, "Referer"), "min_referer")});
+    auto having = MakeFilter(std::move(agg), MakeBinary(BinaryFunction::Greater,
+                                                        MakeColumnExpr("c", core::DataType::Int64),
+                                                        MakeConst(static_cast<int64_t>(100000))));
+    return MakeTopN(std::move(having),
+                    {SortUnit{MakeColumnExpr("l", core::DataType::Int64), false}}, 25);
 }
 
 std::shared_ptr<Operator> QueryMaker::MakeQ29() const {
@@ -512,6 +638,100 @@ std::shared_ptr<Operator> QueryMaker::MakeQ37() const {
                             ColumnRef(table_schema_, "Title"), "Title", {Count("PageViews")});
     return MakeTopN(std::move(agg),
                     {SortUnit{MakeColumnExpr("PageViews", core::DataType::Int64), false}}, 10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ38() const {
+    // SELECT URL, COUNT(*) AS PageViews FROM hits
+    // WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31'
+    // AND IsRefresh = 0 AND IsLink <> 0 AND IsDownload = 0
+    // GROUP BY URL ORDER BY PageViews DESC LIMIT 10;
+    auto condition = AndAll({Eq(table_schema_, "CounterID", 62),
+                             DateBetween(table_schema_, "2013-07-01", "2013-07-31"),
+                             Eq(table_schema_, "IsRefresh", 0), Ne(table_schema_, "IsLink", 0),
+                             Eq(table_schema_, "IsDownload", 0)});
+    auto agg = MakeHashAggregation(MakeFilter(MakeScan(), std::move(condition)),
+                                   ColumnRef(table_schema_, "URL"), "URL", {Count("PageViews")});
+    return MakeTopN(std::move(agg),
+                    {SortUnit{MakeColumnExpr("PageViews", core::DataType::Int64), false}}, 10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ39() const {
+    // SELECT TraficSourceID, SearchEngineID, AdvEngineID,
+    //        CASE WHEN (SearchEngineID = 0 AND AdvEngineID = 0) THEN Referer ELSE '' END AS Src,
+    //        URL AS Dst, COUNT(*) AS PageViews FROM hits
+    // WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND
+    // IsRefresh = 0 GROUP BY TraficSourceID, SearchEngineID, AdvEngineID, Src, Dst ORDER BY
+    // PageViews DESC LIMIT 10;
+    auto src =
+        MakeCase(And(Eq(table_schema_, "SearchEngineID", 0), Eq(table_schema_, "AdvEngineID", 0)),
+                 ColumnRef(table_schema_, "Referer"), MakeConst(std::string()));
+    auto condition = AndAll({Eq(table_schema_, "CounterID", 62),
+                             DateBetween(table_schema_, "2013-07-01", "2013-07-31"),
+                             Eq(table_schema_, "IsRefresh", 0)});
+    auto agg = MakeHashAggregation(
+        MakeFilter(MakeScan(), std::move(condition)),
+        {ProjectionUnit{ColumnRef(table_schema_, "TraficSourceID"), "TraficSourceID"},
+         ProjectionUnit{ColumnRef(table_schema_, "SearchEngineID"), "SearchEngineID"},
+         ProjectionUnit{ColumnRef(table_schema_, "AdvEngineID"), "AdvEngineID"},
+         ProjectionUnit{std::move(src), "Src"},
+         ProjectionUnit{ColumnRef(table_schema_, "URL"), "Dst"}},
+        {Count("PageViews")});
+    return MakeTopN(std::move(agg),
+                    {SortUnit{MakeColumnExpr("PageViews", core::DataType::Int64), false}}, 10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ40() const {
+    // SELECT URLHash, EventDate, COUNT(*) AS PageViews FROM hits
+    // WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND
+    // IsRefresh = 0 AND TraficSourceID IN (-1, 6) AND RefererHash = 3594120000172545465 GROUP BY
+    // URLHash, EventDate ORDER BY PageViews DESC LIMIT 10;
+    auto condition = AndAll({Eq(table_schema_, "CounterID", 62),
+                             DateBetween(table_schema_, "2013-07-01", "2013-07-31"),
+                             Eq(table_schema_, "IsRefresh", 0),
+                             InInts(ColumnRef(table_schema_, "TraficSourceID"), {-1, 6}),
+                             Eq(table_schema_, "RefererHash", 3594120000172545465LL)});
+    auto agg =
+        MakeHashAggregation(MakeFilter(MakeScan(), std::move(condition)),
+                            {ProjectionUnit{ColumnRef(table_schema_, "URLHash"), "URLHash"},
+                             ProjectionUnit{ColumnRef(table_schema_, "EventDate"), "EventDate"}},
+                            {Count("PageViews")});
+    return MakeTopN(std::move(agg),
+                    {SortUnit{MakeColumnExpr("PageViews", core::DataType::Int64), false}}, 10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ41() const {
+    // SELECT WindowClientWidth, WindowClientHeight, COUNT(*) AS PageViews FROM hits
+    // WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31' AND
+    // IsRefresh = 0 AND DontCountHits = 0 AND URLHash = 2868770270353813622 GROUP BY
+    // WindowClientWidth, WindowClientHeight ORDER BY PageViews DESC LIMIT 10;
+    auto condition = AndAll(
+        {Eq(table_schema_, "CounterID", 62), DateBetween(table_schema_, "2013-07-01", "2013-07-31"),
+         Eq(table_schema_, "IsRefresh", 0), Eq(table_schema_, "DontCountHits", 0),
+         Eq(table_schema_, "URLHash", 2868770270353813622LL)});
+    auto agg = MakeHashAggregation(
+        MakeFilter(MakeScan(), std::move(condition)),
+        {ProjectionUnit{ColumnRef(table_schema_, "WindowClientWidth"), "WindowClientWidth"},
+         ProjectionUnit{ColumnRef(table_schema_, "WindowClientHeight"), "WindowClientHeight"}},
+        {Count("PageViews")});
+    return MakeTopN(std::move(agg),
+                    {SortUnit{MakeColumnExpr("PageViews", core::DataType::Int64), false}}, 10);
+}
+
+std::shared_ptr<Operator> QueryMaker::MakeQ42() const {
+    // SELECT DATE_TRUNC('minute', EventTime) AS M, COUNT(*) AS PageViews FROM hits
+    // WHERE CounterID = 62 AND EventDate >= '2013-07-14' AND EventDate <= '2013-07-15' AND
+    // IsRefresh = 0 AND DontCountHits = 0 GROUP BY DATE_TRUNC('minute', EventTime) ORDER BY
+    // DATE_TRUNC('minute', EventTime) LIMIT 10;
+    auto condition = AndAll(
+        {Eq(table_schema_, "CounterID", 62), DateBetween(table_schema_, "2013-07-14", "2013-07-15"),
+         Eq(table_schema_, "IsRefresh", 0), Eq(table_schema_, "DontCountHits", 0)});
+    auto agg = MakeHashAggregation(
+        MakeFilter(MakeScan(), std::move(condition)),
+        {ProjectionUnit{
+            MakeFunction(ScalarFunction::TruncMinute, ColumnRef(table_schema_, "EventTime")), "M"}},
+        {Count("PageViews")});
+    return MakeTopN(std::move(agg),
+                    {SortUnit{MakeColumnExpr("M", core::DataType::Timestamp), true}}, 10);
 }
 
 std::vector<core::Batch> ExecuteClickBenchQuery(std::istream& is, size_t query_id) {
