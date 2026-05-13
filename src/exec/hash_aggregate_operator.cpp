@@ -14,13 +14,14 @@ namespace columnar::exec {
 namespace {
 core::DataType KeyOutputType(const Expression& expr) {
     auto type = GetExpressionType(expr);
-    if (type == core::DataType::String) {
-        return core::DataType::String;
+    if (type == core::DataType::String || type == core::DataType::Timestamp ||
+        type == core::DataType::Date) {
+        return type;
     }
     if (HasIntegerValue(type)) {
         return core::DataType::Int64;
     }
-    THROW_RUNTIME_ERROR("GROUP BY key must be integer or string");
+    THROW_RUNTIME_ERROR("GROUP BY key must be integer, string, timestamp, or date");
 }
 
 core::Schema MakeHashAggregateSchema(const std::vector<ProjectionUnit>& keys,

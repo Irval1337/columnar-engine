@@ -63,8 +63,8 @@ int CompareRowRefs(const core::Column& col_a, size_t row_a, const core::Column& 
 }  // namespace
 
 TopNSink::TopNSink(IOperator& downstream, std::vector<SortUnit> sort_units,
-                   std::optional<size_t> limit)
-    : downstream_(downstream), sort_units_(std::move(sort_units)), limit_(limit) {
+                   std::optional<size_t> limit, std::optional<size_t> offset)
+    : downstream_(downstream), sort_units_(std::move(sort_units)), limit_(limit), offset_(offset) {
 }
 
 void TopNSink::Consume(core::Batch batch) {
@@ -114,11 +114,18 @@ void TopNSink::Finalize() {
         return false;
     };
 
-    if (limit_ && *limit_ < refs.size()) {
-        std::partial_sort(refs.begin(), refs.begin() + *limit_, refs.end(), less);
-        refs.resize(*limit_);
+    size_t offset = offset_.value_or(0);
+    if (limit_ && offset + *limit_ < refs.size()) {
+        size_t prefix = offset + *limit_;
+        std::partial_sort(refs.begin(), refs.begin() + prefix, refs.end(), less);
+        refs.resize(prefix);
     } else {
         std::sort(refs.begin(), refs.end(), less);
+    }
+    if (offset >= refs.size()) {
+        refs.clear();
+    } else if (offset > 0) {
+        refs.erase(refs.begin(), refs.begin() + offset);
     }
     core::Batch out(buffer_.front().GetSchema(), refs.size());
     size_t cols = buffer_.front().ColumnsCount();

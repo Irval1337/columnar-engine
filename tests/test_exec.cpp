@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include <bruh/bruh.h>
+#include <core/columns/string_column.h>
+#include <core/columns/timestamp_column.h>
 #include <exec/clickbench.h>
+#include <exec/kernel.h>
 #include <exec/operator.h>
 
 #include <set>
@@ -8,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 using namespace columnar;  // NOLINT
 
@@ -29,32 +33,52 @@ core::Schema ClickBenchMiniSchema() {
                          core::Field("MobilePhone", core::DataType::Int64),
                          core::Field("SearchEngineID", core::DataType::Int64),
                          core::Field("ClientIP", core::DataType::Int64),
-                         core::Field("WatchID", core::DataType::Int64)});
+                         core::Field("WatchID", core::DataType::Int64),
+                         core::Field("IsLink", core::DataType::Int64),
+                         core::Field("IsDownload", core::DataType::Int64),
+                         core::Field("URLHash", core::DataType::Int64),
+                         core::Field("RefererHash", core::DataType::Int64),
+                         core::Field("Referer", core::DataType::String),
+                         core::Field("WindowClientWidth", core::DataType::Int64),
+                         core::Field("WindowClientHeight", core::DataType::Int64),
+                         core::Field("TraficSourceID", core::DataType::Int64)});
 }
 
-void AppendRow(core::Batch& batch, int64_t adv, int64_t width, int64_t user, int64_t region,
-               std::string_view search_phrase, std::string_view event_date, std::string_view url,
-               std::string_view mobile_phone_model, std::string_view title,
-               std::string_view event_time, int64_t counter_id, int64_t dont_count_hits,
-               int64_t is_refresh, int64_t mobile_phone, int64_t search_engine_id,
-               int64_t client_ip, int64_t watch_id) {
-    batch.ColumnAt(0).AppendFromString(std::to_string(adv));
-    batch.ColumnAt(1).AppendFromString(std::to_string(width));
-    batch.ColumnAt(2).AppendFromString(std::to_string(user));
-    batch.ColumnAt(3).AppendFromString(std::to_string(region));
-    batch.ColumnAt(4).AppendFromString(search_phrase);
-    batch.ColumnAt(5).AppendFromString(event_date);
-    batch.ColumnAt(6).AppendFromString(url);
-    batch.ColumnAt(7).AppendFromString(mobile_phone_model);
-    batch.ColumnAt(8).AppendFromString(title);
-    batch.ColumnAt(9).AppendFromString(event_time);
-    batch.ColumnAt(10).AppendFromString(std::to_string(counter_id));
-    batch.ColumnAt(11).AppendFromString(std::to_string(dont_count_hits));
-    batch.ColumnAt(12).AppendFromString(std::to_string(is_refresh));
-    batch.ColumnAt(13).AppendFromString(std::to_string(mobile_phone));
-    batch.ColumnAt(14).AppendFromString(std::to_string(search_engine_id));
-    batch.ColumnAt(15).AppendFromString(std::to_string(client_ip));
-    batch.ColumnAt(16).AppendFromString(std::to_string(watch_id));
+struct Row {
+    int64_t adv, width, user, region;
+    std::string_view search_phrase, event_date, url, mobile_phone_model, title, event_time;
+    int64_t counter_id, dont_count_hits, is_refresh, mobile_phone, search_engine_id, client_ip,
+        watch_id, is_link, is_download, url_hash, referer_hash;
+    std::string_view referer;
+    int64_t window_client_width, window_client_height, trafic_source_id;
+};
+
+void AppendRow(core::Batch& batch, const Row& r) {
+    batch.ColumnAt(0).AppendFromString(std::to_string(r.adv));
+    batch.ColumnAt(1).AppendFromString(std::to_string(r.width));
+    batch.ColumnAt(2).AppendFromString(std::to_string(r.user));
+    batch.ColumnAt(3).AppendFromString(std::to_string(r.region));
+    batch.ColumnAt(4).AppendFromString(r.search_phrase);
+    batch.ColumnAt(5).AppendFromString(r.event_date);
+    batch.ColumnAt(6).AppendFromString(r.url);
+    batch.ColumnAt(7).AppendFromString(r.mobile_phone_model);
+    batch.ColumnAt(8).AppendFromString(r.title);
+    batch.ColumnAt(9).AppendFromString(r.event_time);
+    batch.ColumnAt(10).AppendFromString(std::to_string(r.counter_id));
+    batch.ColumnAt(11).AppendFromString(std::to_string(r.dont_count_hits));
+    batch.ColumnAt(12).AppendFromString(std::to_string(r.is_refresh));
+    batch.ColumnAt(13).AppendFromString(std::to_string(r.mobile_phone));
+    batch.ColumnAt(14).AppendFromString(std::to_string(r.search_engine_id));
+    batch.ColumnAt(15).AppendFromString(std::to_string(r.client_ip));
+    batch.ColumnAt(16).AppendFromString(std::to_string(r.watch_id));
+    batch.ColumnAt(17).AppendFromString(std::to_string(r.is_link));
+    batch.ColumnAt(18).AppendFromString(std::to_string(r.is_download));
+    batch.ColumnAt(19).AppendFromString(std::to_string(r.url_hash));
+    batch.ColumnAt(20).AppendFromString(std::to_string(r.referer_hash));
+    batch.ColumnAt(21).AppendFromString(r.referer);
+    batch.ColumnAt(22).AppendFromString(std::to_string(r.window_client_width));
+    batch.ColumnAt(23).AppendFromString(std::to_string(r.window_client_height));
+    batch.ColumnAt(24).AppendFromString(std::to_string(r.trafic_source_id));
 }
 
 std::stringstream MakeClickBenchMiniFile() {
@@ -63,12 +87,81 @@ std::stringstream MakeClickBenchMiniFile() {
     {
         bruh::BruhBatchWriter writer(ss, schema);
         core::Batch batch(schema);
-        AppendRow(batch, 0, 100, 10, 1, "alpha", "2013-07-02", "example.com", "iPhone", "Example",
-                  "2013-07-02 10:00:00", 62, 0, 0, 1, 2, 1000, 7);
-        AppendRow(batch, 1, 200, 10, 1, "beta", "2013-07-01", "google.com", "Pixel", "Google News",
-                  "2013-07-01 09:00:00", 62, 0, 0, 1, 3, 1000, 8);
-        AppendRow(batch, 2, 300, 20, 2, "alpha", "2013-07-03", "https://google.org/path", "iPhone",
-                  "Other", "2013-07-03 08:00:00", 63, 0, 0, 2, 2, 2000, 8);
+        AppendRow(batch, {0,
+                          100,
+                          10,
+                          1,
+                          "alpha",
+                          "2013-07-02",
+                          "example.com",
+                          "iPhone",
+                          "Example",
+                          "2013-07-02 10:00:00",
+                          62,
+                          0,
+                          0,
+                          1,
+                          2,
+                          1000,
+                          7,
+                          1,
+                          0,
+                          111,
+                          222,
+                          "http://www.referrer.example/page",
+                          1920,
+                          1080,
+                          -1});
+        AppendRow(batch, {1,
+                          200,
+                          10,
+                          1,
+                          "beta",
+                          "2013-07-01",
+                          "google.com",
+                          "Pixel",
+                          "Google News",
+                          "2013-07-01 09:00:00",
+                          62,
+                          0,
+                          0,
+                          1,
+                          3,
+                          1000,
+                          8,
+                          0,
+                          0,
+                          111,
+                          222,
+                          "https://news.google.com/feed",
+                          1366,
+                          768,
+                          6});
+        AppendRow(batch, {2,
+                          300,
+                          20,
+                          2,
+                          "alpha",
+                          "2013-07-03",
+                          "https://google.org/path",
+                          "iPhone",
+                          "Other",
+                          "2013-07-03 08:00:00",
+                          63,
+                          0,
+                          0,
+                          2,
+                          2,
+                          2000,
+                          8,
+                          1,
+                          1,
+                          333,
+                          222,
+                          "example.org",
+                          1920,
+                          1080,
+                          2});
         writer.Write(batch);
         writer.Flush();
     }
@@ -89,6 +182,14 @@ core::Batch RunPlan(std::shared_ptr<exec::Operator> plan) {
     auto batches = exec::Execute(reader, std::move(plan));
     EXPECT_EQ(batches.size(), 1);
     return std::move(batches[0]);
+}
+
+size_t TotalRows(const std::vector<core::Batch>& batches) {
+    size_t total = 0;
+    for (auto& batch : batches) {
+        total += batch.RowsCount();
+    }
+    return total;
 }
 }  // namespace
 
@@ -156,7 +257,7 @@ TEST(ClickBenchQueries, MinMaxEventDate) {
 
 TEST(ClickBenchQueries, UnsupportedQueryThrows) {
     auto ss = MakeClickBenchMiniFile();
-    EXPECT_THROW(exec::ExecuteClickBenchQuery(ss, 18), std::runtime_error);
+    EXPECT_THROW(exec::ExecuteClickBenchQuery(ss, 99), std::runtime_error);
 }
 
 TEST(ProjectOperator, RenameColumn) {
@@ -584,4 +685,138 @@ TEST(ClickBenchQueries, Q35GroupByClientIpArithmetic) {
     EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "2000");
     EXPECT_EQ(result.ColumnAt(1).GetAsString(1), "1999");
     EXPECT_EQ(result.ColumnAt(4).GetAsString(1), "1");
+}
+
+TEST(TopNOperator, OffsetWithLimit) {
+    auto plan = exec::MakeTopN(
+        exec::MakeScan(),
+        {exec::SortUnit{exec::MakeColumnExpr("ResolutionWidth", core::DataType::Int64), true}},
+        /*limit=*/1, /*offset=*/1);
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.RowsCount(), 1);
+    auto idx = result.GetSchema().GetIndex("ResolutionWidth");
+    EXPECT_EQ(result.ColumnAt(idx).GetAsString(0), "200");
+}
+
+TEST(TopNOperator, OffsetWithoutLimit) {
+    auto plan = exec::MakeTopN(
+        exec::MakeScan(),
+        {exec::SortUnit{exec::MakeColumnExpr("ResolutionWidth", core::DataType::Int64), true}},
+        std::nullopt, /*offset=*/2);
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.RowsCount(), 1);
+    auto idx = result.GetSchema().GetIndex("ResolutionWidth");
+    EXPECT_EQ(result.ColumnAt(idx).GetAsString(0), "300");
+}
+
+TEST(TopNOperator, OffsetBeyondEndIsEmpty) {
+    auto plan = exec::MakeTopN(
+        exec::MakeScan(),
+        {exec::SortUnit{exec::MakeColumnExpr("ResolutionWidth", core::DataType::Int64), true}},
+        /*limit=*/2, /*offset=*/5);
+    auto result = RunPlan(plan);
+    EXPECT_EQ(result.RowsCount(), 0);
+}
+
+TEST(Expression, StrLength) {
+    auto plan = exec::MakeProject(
+        exec::MakeScan(),
+        {exec::ProjectionUnit{
+            exec::MakeFunction(exec::ScalarFunction::Length,
+                               exec::MakeColumnExpr("URL", core::DataType::String)),
+            "len"}});
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.RowsCount(), 3);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "11");  // example.com
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "10");  // google.com
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "23");  // https://google.org/path
+}
+
+TEST(Expression, CaseWhen) {
+    auto plan = exec::MakeProject(
+        exec::MakeScan(),
+        {exec::ProjectionUnit{
+            exec::MakeCase(exec::MakeBinary(exec::BinaryFunction::Equal,
+                                            exec::MakeColumnExpr("UserID", core::DataType::Int64),
+                                            exec::MakeConst(static_cast<int64_t>(10))),
+                           exec::MakeColumnExpr("URL", core::DataType::String),
+                           exec::MakeConst(std::string("other"))),
+            "src"}});
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.RowsCount(), 3);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "example.com");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "google.com");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "other");
+}
+
+TEST(Expression, RegexReplaceExtractsHost) {
+    auto plan = exec::MakeProject(
+        exec::MakeScan(),
+        {exec::ProjectionUnit{
+            exec::MakeRegexReplace(exec::MakeColumnExpr("URL", core::DataType::String),
+                                   R"(^https?://(?:www\.)?([^/]+)/.*$)", R"(\1)"),
+            "host"}});
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.RowsCount(), 3);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "example.com");  // no scheme: unchanged
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "google.com");   // no scheme: unchanged
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "google.org");   // host extracted
+}
+
+TEST(Kernel, TimestampAndLengthFunctions) {
+    core::TimestampColumn ts(false);
+    ts.AppendFromString("2013-07-14 12:34:56");
+    ts.AppendFromString("2013-07-14 00:00:05");
+    auto minutes = exec::kernel::ExtractMinute(ts);
+    ASSERT_EQ(minutes->Size(), 2);
+    EXPECT_EQ(minutes->GetAsString(0), "34");
+    EXPECT_EQ(minutes->GetAsString(1), "0");
+    auto truncated = exec::kernel::TruncMinute(ts);
+    EXPECT_EQ(truncated->GetAsString(0), "2013-07-14 12:34:00");
+    EXPECT_EQ(truncated->GetAsString(1), "2013-07-14 00:00:00");
+
+    core::StringColumn s(false);
+    s.AppendFromString("abc");
+    s.AppendFromString("");
+    auto lengths = exec::kernel::StrLength(s);
+    ASSERT_EQ(lengths->Size(), 2);
+    EXPECT_EQ(lengths->GetAsString(0), "3");
+    EXPECT_EQ(lengths->GetAsString(1), "0");
+}
+
+TEST(ClickBenchQueries, Q18ExtractMinutePerUserAndPhrase) {
+    auto result = RunMiniQuery(18);
+    ASSERT_EQ(result.ColumnsCount(), 4);
+    ASSERT_EQ(result.RowsCount(), 3);
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        EXPECT_EQ(result.ColumnAt(1).GetAsString(row), "0");  // all fixture timestamps are :00
+        EXPECT_EQ(result.ColumnAt(3).GetAsString(row), "1");
+    }
+}
+
+TEST(ClickBenchQueries, Q23WatchIdEventTimeUrlTitle) {
+    auto result = RunMiniQuery(23);
+    ASSERT_EQ(result.RowsCount(), 2);
+    ASSERT_EQ(result.ColumnsCount(), 4);
+    EXPECT_EQ(result.GetSchema().GetFields()[0].name, "WatchID");
+    EXPECT_EQ(result.GetSchema().GetFields()[1].name, "EventTime");
+    EXPECT_EQ(result.GetSchema().GetFields()[2].name, "URL");
+    EXPECT_EQ(result.GetSchema().GetFields()[3].name, "Title");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "google.com");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(1), "https://google.org/path");
+}
+
+TEST(ClickBenchQueries, HavingAndDateQueriesRunOnMiniData) {
+    for (size_t query : {27, 28, 40, 41, 42}) {
+        auto ss = MakeClickBenchMiniFile();
+        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(ss, query)), 0u) << "query " << query;
+    }
+    {
+        auto ss = MakeClickBenchMiniFile();
+        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(ss, 38)), 1u);
+    }
+    {
+        auto ss = MakeClickBenchMiniFile();
+        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(ss, 39)), 2u);
+    }
 }

@@ -4,8 +4,10 @@
 #include <core/column.h>
 #include <core/datatype.h>
 
+#include <cctype>
 #include <cstdint>
 #include <memory>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -18,6 +20,9 @@ enum class ExpressionType {
     Column,
     Binary,
     Contains,
+    Function,
+    Case,
+    RegexReplace,
 };
 
 struct Expression {
@@ -114,6 +119,80 @@ inline std::shared_ptr<BinaryExpr> MakeBinary(BinaryFunction function,
 inline std::shared_ptr<ContainsExpr> MakeContains(std::shared_ptr<Expression> expr,
                                                   std::string substring, bool negated = false) {
     return std::make_shared<ContainsExpr>(std::move(expr), std::move(substring), negated);
+}
+
+enum class ScalarFunction {
+    Length,         // length(string) -> Int64
+    ExtractMinute,  // extract(minute FROM timestamp) -> Int64
+    TruncMinute,    // date_trunc('minute', timestamp) -> Timestamp
+};
+
+struct FunctionExpr final : public Expression {
+    FunctionExpr(ScalarFunction f, std::shared_ptr<Expression> a)
+        : Expression(ExpressionType::Function), function(f), arg(std::move(a)) {
+    }
+
+    ScalarFunction function;
+    std::shared_ptr<Expression> arg;
+};
+
+struct CaseExpr final : public Expression {
+    CaseExpr(std::shared_ptr<Expression> c, std::shared_ptr<Expression> t,
+             std::shared_ptr<Expression> f)
+        : Expression(ExpressionType::Case),
+          cond(std::move(c)),
+          when_true(std::move(t)),
+          when_false(std::move(f)) {
+    }
+
+    std::shared_ptr<Expression> cond;
+    std::shared_ptr<Expression> when_true;
+    std::shared_ptr<Expression> when_false;
+};
+
+struct RegexReplaceExpr final : public Expression {
+    RegexReplaceExpr(std::shared_ptr<Expression> a, const std::string& pattern,
+                     std::string replacement)
+        : Expression(ExpressionType::RegexReplace),
+          arg(std::move(a)),
+          regex(pattern, std::regex::ECMAScript),
+          replacement(std::move(replacement)) {
+    }
+
+    std::shared_ptr<Expression> arg;
+    std::regex regex;
+    std::string replacement;
+};
+
+inline std::shared_ptr<FunctionExpr> MakeFunction(ScalarFunction function,
+                                                  std::shared_ptr<Expression> arg) {
+    return std::make_shared<FunctionExpr>(function, std::move(arg));
+}
+
+inline std::shared_ptr<CaseExpr> MakeCase(std::shared_ptr<Expression> cond,
+                                          std::shared_ptr<Expression> when_true,
+                                          std::shared_ptr<Expression> when_false) {
+    return std::make_shared<CaseExpr>(std::move(cond), std::move(when_true), std::move(when_false));
+}
+
+inline std::shared_ptr<RegexReplaceExpr> MakeRegexReplace(std::shared_ptr<Expression> arg,
+                                                          const std::string& pattern,
+                                                          const std::string& replacement) {
+    std::string translated;
+    translated.reserve(replacement.size());
+    for (size_t i = 0; i < replacement.size(); ++i) {
+        char c = replacement[i];
+        if (c == '\\' && i + 1 < replacement.size() &&
+            std::isdigit(static_cast<unsigned char>(replacement[i + 1])) != 0) {
+            translated += '$';
+            translated += replacement[++i];
+        } else if (c == '$') {
+            translated += "$$";
+        } else {
+            translated += c;
+        }
+    }
+    return std::make_shared<RegexReplaceExpr>(std::move(arg), pattern, std::move(translated));
 }
 
 class EvalResult {

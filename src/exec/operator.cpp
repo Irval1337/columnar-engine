@@ -137,7 +137,7 @@ void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>&
         }
         case OperatorType::TopN: {
             auto& topn = As<TopNOperator>(op);
-            TopNSink sink(downstream, topn.sort_units, topn.limit);
+            TopNSink sink(downstream, topn.sort_units, topn.limit, topn.offset);
             ExecuteInto(reader, topn.child, sink);
             return;
         }
