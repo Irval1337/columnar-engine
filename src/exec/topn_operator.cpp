@@ -83,14 +83,7 @@ void TopNSink::Finalize() {
     for (auto& b : buffer_) {
         total_rows += b.RowsCount();
     }
-    std::vector<RowRef> refs;
-    refs.reserve(total_rows);
-    for (size_t b = 0; b < buffer_.size(); ++b) {
-        size_t rows = buffer_[b].RowsCount();
-        for (size_t r = 0; r < rows; ++r) {
-            refs.push_back({static_cast<uint32_t>(b), static_cast<uint32_t>(r)});
-        }
-    }
+
     std::vector<std::vector<EvalResult>> sort_evals(sort_units_.size());
     std::vector<std::vector<const core::Column*>> sort_cols(sort_units_.size());
     for (size_t s = 0; s < sort_units_.size(); ++s) {
@@ -114,12 +107,36 @@ void TopNSink::Finalize() {
         return false;
     };
 
-    if (limit_ && *limit_ < refs.size()) {
-        std::partial_sort(refs.begin(), refs.begin() + *limit_, refs.end(), less);
-        refs.resize(*limit_);
+    std::vector<RowRef> refs;
+    if (limit_ && *limit_ < total_rows) {
+        size_t k = *limit_;
+        refs.reserve(k);
+        for (size_t b = 0; b < buffer_.size(); ++b) {
+            size_t rows = buffer_[b].RowsCount();
+            for (size_t r = 0; r < rows; ++r) {
+                RowRef ref{static_cast<uint32_t>(b), static_cast<uint32_t>(r)};
+                if (refs.size() < k) {
+                    refs.push_back(ref);
+                    std::push_heap(refs.begin(), refs.end(), less);
+                } else if (less(ref, refs.front())) {
+                    std::pop_heap(refs.begin(), refs.end(), less);
+                    refs.back() = ref;
+                    std::push_heap(refs.begin(), refs.end(), less);
+                }
+            }
+        }
+        std::sort_heap(refs.begin(), refs.end(), less);
     } else {
+        refs.reserve(total_rows);
+        for (size_t b = 0; b < buffer_.size(); ++b) {
+            size_t rows = buffer_[b].RowsCount();
+            for (size_t r = 0; r < rows; ++r) {
+                refs.push_back({static_cast<uint32_t>(b), static_cast<uint32_t>(r)});
+            }
+        }
         std::sort(refs.begin(), refs.end(), less);
     }
+
     core::Batch out(buffer_.front().GetSchema(), refs.size());
     size_t cols = buffer_.front().ColumnsCount();
     for (size_t c = 0; c < cols; ++c) {

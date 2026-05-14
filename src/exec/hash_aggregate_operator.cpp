@@ -7,7 +7,6 @@
 #include <exec/expression.h>
 #include <util/macro.h>
 
-#include <functional>
 #include <utility>
 
 namespace columnar::exec {
@@ -36,17 +35,12 @@ core::Schema MakeHashAggregateSchema(const Expression& key, const std::string& k
 }
 }  // namespace
 
-size_t HashAggregationSink::GroupKeyHash::operator()(const GroupKey& k) const noexcept {
-    return std::visit(
-        [](const auto& value) {
-            using T = std::decay_t<decltype(value)>;
-            if constexpr (std::is_same_v<T, int64_t>) {
-                return std::hash<int64_t>{}(value);
-            } else {
-                return std::hash<std::string>{}(value);
-            }
-        },
-        k);
+HashAggregationSink::KeyMode HashAggregationSink::SelectKeyMode(const Expression& key) {
+    auto type = GetExpressionType(key);
+    if (type == core::DataType::String) {
+        return KeyMode::String;
+    }
+    return KeyMode::Int64;
 }
 
 HashAggregationSink::HashAggregationSink(IOperator& downstream, std::shared_ptr<Expression> key,
@@ -56,7 +50,55 @@ HashAggregationSink::HashAggregationSink(IOperator& downstream, std::shared_ptr<
       key_(std::move(key)),
       key_name_(std::move(key_name)),
       aggregations_(std::move(aggregations)),
-      output_schema_(MakeHashAggregateSchema(*key_, key_name_, aggregations_)) {
+      output_schema_(MakeHashAggregateSchema(*key_, key_name_, aggregations_)),
+      mode_(SelectKeyMode(*key_)) {
+}
+
+void HashAggregationSink::UpdateAggsForRow(States& states,
+                                           const std::vector<const core::Column*>& agg_cols,
+                                           size_t row) {
+    for (size_t i = 0; i < aggregations_.size(); ++i) {
+        auto& unit = aggregations_[i];
+        if (unit.type == AggregationType::Count) {
+            ++std::get<CountState>(states[i]).value;
+            continue;
+        }
+        UpdateAggregationStateRow(states[i], unit, *agg_cols[i], row);
+    }
+}
+
+void HashAggregationSink::ConsumeInt64(const core::Column& key_col,
+                                       const std::vector<const core::Column*>& agg_cols,
+                                       size_t rows) {
+    for (size_t row = 0; row < rows; ++row) {
+        if (key_col.IsNull(row)) {
+            continue;
+        }
+        int64_t key = ReadIntegerRow(key_col, row);
+        auto it = int64_groups_.find(key);
+        if (it == int64_groups_.end()) {
+            it = int64_groups_.emplace(key, MakeAggregationStates(aggregations_)).first;
+        }
+        UpdateAggsForRow(it->second, agg_cols, row);
+    }
+}
+
+void HashAggregationSink::ConsumeString(const core::Column& key_col,
+                                        const std::vector<const core::Column*>& agg_cols,
+                                        size_t rows) {
+    auto& s = static_cast<const core::StringColumn&>(key_col);
+    for (size_t row = 0; row < rows; ++row) {
+        if (s.IsNull(row)) {
+            continue;
+        }
+        auto key = s.Get(row);
+        auto it = string_groups_.find(key);
+        if (it == string_groups_.end()) {
+            it = string_groups_.emplace(std::string(key), MakeAggregationStates(aggregations_))
+                     .first;
+        }
+        UpdateAggsForRow(it->second, agg_cols, row);
+    }
 }
 
 void HashAggregationSink::Consume(core::Batch batch) {
@@ -79,47 +121,33 @@ void HashAggregationSink::Consume(core::Batch batch) {
         agg_cols[i] = &evals.back().Get();
     }
 
-    bool string_key = key_col.GetDataType() == core::DataType::String;
-
-    for (size_t row = 0; row < rows; ++row) {
-        if (key_col.IsNull(row)) {
-            continue;
-        }
-
-        GroupKey key = string_key ? GroupKey{std::string(ReadStringRow(key_col, row))}
-                                  : GroupKey{ReadIntegerRow(key_col, row)};
-        auto& states = groups_[std::move(key)];
-        if (states.empty()) {
-            states = MakeAggregationStates(aggregations_);
-        }
-        for (size_t i = 0; i < aggregations_.size(); ++i) {
-            auto& unit = aggregations_[i];
-            if (unit.type == AggregationType::Count) {
-                ++std::get<CountState>(states[i]).value;
-                continue;
-            }
-            UpdateAggregationStateRow(states[i], unit, *agg_cols[i], row);
-        }
+    if (mode_ == KeyMode::Int64) {
+        ConsumeInt64(key_col, agg_cols, rows);
+    } else {
+        ConsumeString(key_col, agg_cols, rows);
     }
 }
 
 void HashAggregationSink::Finalize() {
-    core::Batch out(output_schema_, groups_.size());
+    size_t groups_count = mode_ == KeyMode::Int64 ? int64_groups_.size() : string_groups_.size();
+    core::Batch out(output_schema_, groups_count);
     auto& key_out = out.ColumnAt(0);
 
-    for (auto& [key, states] : groups_) {
-        std::visit(
-            [&](const auto& value) {
-                using T = std::decay_t<decltype(value)>;
-                if constexpr (std::is_same_v<T, int64_t>) {
-                    AppendInteger(key_out, value);
-                } else {
-                    static_cast<core::StringColumn&>(key_out).Append(value);
-                }
-            },
-            key);
+    auto append_aggs = [&](const States& states) {
         for (size_t i = 0; i < aggregations_.size(); ++i) {
             AppendAggregationResult(states[i], aggregations_[i], out.ColumnAt(i + 1));
+        }
+    };
+
+    if (mode_ == KeyMode::Int64) {
+        for (auto& [key, states] : int64_groups_) {
+            AppendInteger(key_out, key);
+            append_aggs(states);
+        }
+    } else {
+        for (auto& [key, states] : string_groups_) {
+            static_cast<core::StringColumn&>(key_out).Append(key);
+            append_aggs(states);
         }
     }
 
