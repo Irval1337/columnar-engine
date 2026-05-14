@@ -318,16 +318,32 @@ jobs:
             fi
           }
 
+          same_rows_ignoring_order() {
+            local actual="$1"
+            local expected="$2"
+            local actual_sorted expected_sorted
+            actual_sorted=$(mktemp "${RUNNER_TEMP:-/tmp}/actual.XXXXXX")
+            expected_sorted=$(mktemp "${RUNNER_TEMP:-/tmp}/expected.XXXXXX")
+
+            LC_ALL=C sort "${actual}" > "${actual_sorted}"
+            LC_ALL=C sort "${expected}" > "${expected_sorted}"
+            cmp -s "${actual_sorted}" "${expected_sorted}"
+            local status=$?
+
+            rm -f "${actual_sorted}" "${expected_sorted}"
+            return "${status}"
+          }
+
           {
             echo "## ClickBench answer verification"
             echo ""
-            echo "AC = answer matches reference, WA = answer mismatches, NA = empty/missing actual, ? = no reference baseline."
+            echo "AC = answer matches reference, WA_POSITION_DEPENDENT = rows match after sorting but byte order differs, WA = answer mismatches, NA = empty/missing actual, ? = no reference baseline."
             echo ""
             echo "| query | verdict | actual | expected |"
             echo "|------:|:--------|:-------|:---------|"
           } > "${RESULTS_DIR}/summary.md"
 
-          ac=0; wa=0; na=0; unknown=0
+          ac=0; wa_position=0; wa=0; na=0; unknown=0
           for q in $(seq 0 42); do
             actual="${QUERY_RESULTS_DIR}/query_${q}.csv"
             expected="${EXPECTED_DIR}/query_${q}.csv"
@@ -338,6 +354,8 @@ jobs:
               verdict="?"; unknown=$((unknown+1))
             elif cmp -s "${actual}" "${expected}"; then
               verdict="AC"; ac=$((ac+1))
+            elif same_rows_ignoring_order "${actual}" "${expected}"; then
+              verdict="WA_POSITION_DEPENDENT"; wa_position=$((wa_position+1))
             else
               verdict="WA"; wa=$((wa+1))
             fi
@@ -357,7 +375,7 @@ jobs:
 
           {
             echo ""
-            echo "**Totals:** AC=${ac}, WA=${wa}, NA=${na}, ?=${unknown}"
+            echo "**Totals:** AC=${ac}, WA_POSITION_DEPENDENT=${wa_position}, WA=${wa}, NA=${na}, ?=${unknown}"
           } >> "${RESULTS_DIR}/summary.md"
 
           cat "${RESULTS_DIR}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
