@@ -5,6 +5,7 @@
 #include <core/field.h>
 #include <exec/column_helpers.h>
 #include <exec/expression.h>
+#include <exec/kernel.h>
 #include <util/macro.h>
 
 #include <utility>
@@ -39,6 +40,34 @@ core::Schema MakeHashAggregateSchema(const std::vector<ProjectionUnit>& keys,
 
 void HashCombine(size_t& seed, size_t value) noexcept {
     seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+}
+
+template <typename F>
+void ForSelectedRows(const std::vector<uint32_t>* selection, size_t rows, F&& f) {
+    if (selection != nullptr) {
+        for (uint32_t row : *selection) {
+            f(static_cast<size_t>(row));
+        }
+    } else {
+        for (size_t row = 0; row < rows; ++row) {
+            f(row);
+        }
+    }
+}
+
+bool RequiresDenseBatch(const std::vector<ProjectionUnit>& keys,
+                        const std::vector<AggregationUnit>& aggregations) {
+    for (auto& key : keys) {
+        if (!IsTrivialExpression(*key.expression)) {
+            return true;
+        }
+    }
+    for (auto& unit : aggregations) {
+        if (unit.expression != nullptr && !IsTrivialExpression(*unit.expression)) {
+            return true;
+        }
+    }
+    return false;
 }
 }  // namespace
 
@@ -98,7 +127,8 @@ HashAggregationSink::HashAggregationSink(IOperator& downstream, std::vector<Proj
       keys_(std::move(keys)),
       aggregations_(std::move(aggregations)),
       output_schema_(MakeHashAggregateSchema(keys_, aggregations_)),
-      mode_(SelectKeyMode(keys_)) {
+      mode_(SelectKeyMode(keys_)),
+      needs_dense_(RequiresDenseBatch(keys_, aggregations_)) {
 }
 
 void HashAggregationSink::UpdateAggsForRow(States& states,
@@ -116,12 +146,12 @@ void HashAggregationSink::UpdateAggsForRow(States& states,
 
 void HashAggregationSink::ConsumeInt64(const core::Column& key_col,
                                        const std::vector<const core::Column*>& agg_cols,
-                                       size_t rows) {
+                                       const std::vector<uint32_t>* selection, size_t rows) {
     VisitIntegerCol(key_col, [&](const auto& typed) {
         const util::BitVector* mask = typed.IsNullable() ? &typed.GetNullMask() : nullptr;
-        for (size_t row = 0; row < rows; ++row) {
+        ForSelectedRows(selection, rows, [&](size_t row) {
             if (mask != nullptr && mask->Get(row)) {
-                continue;
+                return;
             }
             int64_t key = static_cast<int64_t>(ReadTypedValue(typed, row));
             auto it = int64_groups_.find(key);
@@ -129,17 +159,17 @@ void HashAggregationSink::ConsumeInt64(const core::Column& key_col,
                 it = int64_groups_.emplace(key, MakeAggregationStates(aggregations_)).first;
             }
             UpdateAggsForRow(it->second, agg_cols, row);
-        }
+        });
     });
 }
 
 void HashAggregationSink::ConsumeString(const core::Column& key_col,
                                         const std::vector<const core::Column*>& agg_cols,
-                                        size_t rows) {
+                                        const std::vector<uint32_t>* selection, size_t rows) {
     auto& s = static_cast<const core::StringColumn&>(key_col);
-    for (size_t row = 0; row < rows; ++row) {
+    ForSelectedRows(selection, rows, [&](size_t row) {
         if (s.IsNull(row)) {
-            continue;
+            return;
         }
         auto key = s.Get(row);
         auto it = string_groups_.find(key);
@@ -148,23 +178,23 @@ void HashAggregationSink::ConsumeString(const core::Column& key_col,
                      .first;
         }
         UpdateAggsForRow(it->second, agg_cols, row);
-    }
+    });
 }
 
 void HashAggregationSink::ConsumeInt64Pair(const core::Column& first_key_col,
                                            const core::Column& second_key_col,
                                            const std::vector<const core::Column*>& agg_cols,
-                                           size_t rows) {
+                                           const std::vector<uint32_t>* selection, size_t rows) {
     VisitIntegerCol(first_key_col, [&](const auto& first_typed) {
         VisitIntegerCol(second_key_col, [&](const auto& second_typed) {
             const util::BitVector* first_mask =
                 first_typed.IsNullable() ? &first_typed.GetNullMask() : nullptr;
             const util::BitVector* second_mask =
                 second_typed.IsNullable() ? &second_typed.GetNullMask() : nullptr;
-            for (size_t row = 0; row < rows; ++row) {
+            ForSelectedRows(selection, rows, [&](size_t row) {
                 if ((first_mask != nullptr && first_mask->Get(row)) ||
                     (second_mask != nullptr && second_mask->Get(row))) {
-                    continue;
+                    return;
                 }
                 Int64Pair key{static_cast<int64_t>(ReadTypedValue(first_typed, row)),
                               static_cast<int64_t>(ReadTypedValue(second_typed, row))};
@@ -174,17 +204,17 @@ void HashAggregationSink::ConsumeInt64Pair(const core::Column& first_key_col,
                         int64_pair_groups_.emplace(key, MakeAggregationStates(aggregations_)).first;
                 }
                 UpdateAggsForRow(it->second, agg_cols, row);
-            }
+            });
         });
     });
 }
 
 void HashAggregationSink::ConsumeComposite(const std::vector<const core::Column*>& key_cols,
                                            const std::vector<const core::Column*>& agg_cols,
-                                           size_t rows) {
+                                           const std::vector<uint32_t>* selection, size_t rows) {
     CompositeKey key;
     key.reserve(key_cols.size());
-    for (size_t row = 0; row < rows; ++row) {
+    ForSelectedRows(selection, rows, [&](size_t row) {
         key.clear();
         key.reserve(key_cols.size());
         bool has_null_key = false;
@@ -200,7 +230,7 @@ void HashAggregationSink::ConsumeComposite(const std::vector<const core::Column*
             }
         }
         if (has_null_key) {
-            continue;
+            return;
         }
 
         auto it = composite_groups_.find(key);
@@ -209,13 +239,17 @@ void HashAggregationSink::ConsumeComposite(const std::vector<const core::Column*
                      .first;
         }
         UpdateAggsForRow(it->second, agg_cols, row);
-    }
+    });
 }
 
 void HashAggregationSink::Consume(core::Batch batch) {
     size_t rows = batch.RowsCount();
     if (rows == 0) {
         return;
+    }
+    if (batch.HasSelection() && needs_dense_) {
+        batch = kernel::Materialize(batch);
+        rows = batch.RowsCount();
     }
 
     std::vector<EvalResult> key_evals;
@@ -238,18 +272,20 @@ void HashAggregationSink::Consume(core::Batch batch) {
         agg_cols[i] = &agg_evals.back().Get();
     }
 
+    const std::vector<uint32_t>* selection = batch.HasSelection() ? &batch.Selection() : nullptr;
+
     switch (mode_) {
         case KeyMode::Int64:
-            ConsumeInt64(*key_cols[0], agg_cols, rows);
+            ConsumeInt64(*key_cols[0], agg_cols, selection, rows);
             return;
         case KeyMode::String:
-            ConsumeString(*key_cols[0], agg_cols, rows);
+            ConsumeString(*key_cols[0], agg_cols, selection, rows);
             return;
         case KeyMode::Int64Pair:
-            ConsumeInt64Pair(*key_cols[0], *key_cols[1], agg_cols, rows);
+            ConsumeInt64Pair(*key_cols[0], *key_cols[1], agg_cols, selection, rows);
             return;
         case KeyMode::Composite:
-            ConsumeComposite(key_cols, agg_cols, rows);
+            ConsumeComposite(key_cols, agg_cols, selection, rows);
             return;
     }
 }

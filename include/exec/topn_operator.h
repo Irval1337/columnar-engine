@@ -23,6 +23,7 @@ private:
     std::vector<SortUnit> sort_units_;
     std::optional<size_t> limit_;
     std::optional<size_t> offset_;
+    bool needs_dense_;
     std::vector<core::Batch> buffer_;
 };
 }  // namespace columnar::exec

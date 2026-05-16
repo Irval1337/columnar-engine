@@ -24,9 +24,7 @@ public:
 
 class CollectSink final : public IOperator {
 public:
-    void Consume(core::Batch batch) override {
-        batches_.push_back(std::move(batch));
-    }
+    void Consume(core::Batch batch) override;
 
     void Finalize() override {
     }

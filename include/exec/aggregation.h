@@ -86,7 +86,8 @@ std::vector<AggregationState> MakeAggregationStates(
     const std::vector<AggregationUnit>& aggregations);
 
 void UpdateAggregationState(AggregationState& state, const AggregationUnit& unit,
-                            const core::Column& evaluated);
+                            const core::Column& evaluated,
+                            const std::vector<uint32_t>* selection = nullptr);
 
 void UpdateAggregationStateRow(AggregationState& state, const AggregationUnit& unit,
                                const core::Column& evaluated, size_t row);

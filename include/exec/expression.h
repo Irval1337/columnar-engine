@@ -223,6 +223,8 @@ inline void AddColumn(std::vector<std::string>& columns, const std::string& name
 
 core::DataType GetExpressionType(const Expression& expr);
 
+bool IsTrivialExpression(const Expression& expr);
+
 void CollectColumns(const Expression& expr, std::vector<std::string>& columns);
 
 EvalResult Evaluate(const core::Batch& batch, const Expression& expr);

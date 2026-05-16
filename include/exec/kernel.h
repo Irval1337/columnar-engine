@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <vector>
 
 namespace columnar::exec::kernel {
 std::unique_ptr<core::Column> ConstInt64(int64_t value, size_t rows);
@@ -57,7 +58,9 @@ std::unique_ptr<core::Column> CaseSelect(const core::BoolColumn& mask,
                                          const core::Column& when_true,
                                          const core::Column& when_false);
 
-core::Batch ApplyFilter(const core::Batch& batch, const core::BoolColumn& mask);
+std::vector<uint32_t> MaskToSelection(const core::BoolColumn& mask);
+
+core::Batch Materialize(const core::Batch& batch);
 
 template <typename T>
 struct ScalarReduction {
@@ -65,24 +68,34 @@ struct ScalarReduction {
     T value{};
 };
 
-ScalarReduction<int64_t> SumInt(const core::Column& col);
-ScalarReduction<long double> SumDouble(const core::Column& col);
+ScalarReduction<int64_t> SumInt(const core::Column& col,
+                                const std::vector<uint32_t>* selection = nullptr);
+ScalarReduction<long double> SumDouble(const core::Column& col,
+                                       const std::vector<uint32_t>* selection = nullptr);
 
-ScalarReduction<int64_t> MinInt(const core::Column& col);
-ScalarReduction<int64_t> MaxInt(const core::Column& col);
-ScalarReduction<double> MinDouble(const core::Column& col);
-ScalarReduction<double> MaxDouble(const core::Column& col);
-ScalarReduction<std::string> MinString(const core::Column& col);
-ScalarReduction<std::string> MaxString(const core::Column& col);
+ScalarReduction<int64_t> MinInt(const core::Column& col,
+                                const std::vector<uint32_t>* selection = nullptr);
+ScalarReduction<int64_t> MaxInt(const core::Column& col,
+                                const std::vector<uint32_t>* selection = nullptr);
+ScalarReduction<double> MinDouble(const core::Column& col,
+                                  const std::vector<uint32_t>* selection = nullptr);
+ScalarReduction<double> MaxDouble(const core::Column& col,
+                                  const std::vector<uint32_t>* selection = nullptr);
+ScalarReduction<std::string> MinString(const core::Column& col,
+                                       const std::vector<uint32_t>* selection = nullptr);
+ScalarReduction<std::string> MaxString(const core::Column& col,
+                                       const std::vector<uint32_t>* selection = nullptr);
 
 struct AvgPartial {
     __int128 int_sum = 0;
     uint64_t count = 0;
 };
-AvgPartial Avg(const core::Column& col);
+AvgPartial Avg(const core::Column& col, const std::vector<uint32_t>* selection = nullptr);
 
-uint64_t CountNonNull(const core::Column& col);
+uint64_t CountNonNull(const core::Column& col, const std::vector<uint32_t>* selection = nullptr);
 
-void DistinctInts(const core::Column& col, std::unordered_set<int64_t>& out);
-void DistinctStrings(const core::Column& col, std::unordered_set<std::string>& out);
+void DistinctInts(const core::Column& col, std::unordered_set<int64_t>& out,
+                  const std::vector<uint32_t>* selection = nullptr);
+void DistinctStrings(const core::Column& col, std::unordered_set<std::string>& out,
+                     const std::vector<uint32_t>* selection = nullptr);
 }  // namespace columnar::exec::kernel

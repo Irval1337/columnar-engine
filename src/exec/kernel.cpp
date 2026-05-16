@@ -33,44 +33,52 @@ std::unique_ptr<core::BoolColumn> MakeBoolColumn(size_t rows) {
     return out;
 }
 
+template <typename F>
+void ForLogicalRows(const std::vector<uint32_t>* selection, size_t rows, F&& f) {
+    if (selection != nullptr) {
+        for (uint32_t i : *selection) {
+            f(static_cast<size_t>(i));
+        }
+    } else {
+        for (size_t i = 0; i < rows; ++i) {
+            f(i);
+        }
+    }
+}
+
 template <typename Col, typename F>
-void ForEachNonNull(const Col& col, F&& f) {
+void ForEachNonNull(const Col& col, const std::vector<uint32_t>* selection, F&& f) {
     const auto& data = col.GetData();
     if (col.IsNullable()) {
         const auto& mask = col.GetNullMask();
-        for (size_t i = 0; i < data.size(); ++i) {
+        ForLogicalRows(selection, data.size(), [&](size_t i) {
             if (!mask.Get(i)) {
                 f(data[i]);
             }
-        }
+        });
     } else {
-        for (size_t i = 0; i < data.size(); ++i) {
-            f(data[i]);
-        }
+        ForLogicalRows(selection, data.size(), [&](size_t i) { f(data[i]); });
     }
 }
 
 template <typename F>
-void ForEachNonNull(const core::BoolColumn& col, F&& f) {
-    size_t rows = col.Size();
+void ForEachNonNull(const core::BoolColumn& col, const std::vector<uint32_t>* selection, F&& f) {
     if (col.IsNullable()) {
         const auto& mask = col.GetNullMask();
-        for (size_t i = 0; i < rows; ++i) {
+        ForLogicalRows(selection, col.Size(), [&](size_t i) {
             if (!mask.Get(i)) {
                 f(col.Get(i));
             }
-        }
+        });
     } else {
-        for (size_t i = 0; i < rows; ++i) {
-            f(col.Get(i));
-        }
+        ForLogicalRows(selection, col.Size(), [&](size_t i) { f(col.Get(i)); });
     }
 }
 
 template <typename Acc, typename Col>
-ScalarReduction<Acc> SumImpl(const Col& col) {
+ScalarReduction<Acc> SumImpl(const Col& col, const std::vector<uint32_t>* selection) {
     ScalarReduction<Acc> r;
-    ForEachNonNull(col, [&](auto v) {
+    ForEachNonNull(col, selection, [&](auto v) {
         r.value += static_cast<Acc>(v);
         r.has_value = true;
     });
@@ -78,9 +86,10 @@ ScalarReduction<Acc> SumImpl(const Col& col) {
 }
 
 template <typename Acc, typename Col, typename Better>
-ScalarReduction<Acc> MinMaxImpl(const Col& col, Better&& better) {
+ScalarReduction<Acc> MinMaxImpl(const Col& col, const std::vector<uint32_t>* selection,
+                                Better&& better) {
     ScalarReduction<Acc> r;
-    ForEachNonNull(col, [&](auto v) {
+    ForEachNonNull(col, selection, [&](auto v) {
         Acc cv = static_cast<Acc>(v);
         if (!r.has_value || better(cv, r.value)) {
             r.value = cv;
@@ -213,95 +222,6 @@ std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core:
         });
     });
     return std::make_unique<core::Int64Column>(std::move(data), std::move(mask), nullable);
-}
-
-template <typename Col>
-void FilterNumeric(const Col& src, const core::BoolColumn& mask, Col& dst) {
-    const auto& data = src.GetData();
-    const auto& m = mask.GetData();
-    if (src.IsNullable()) {
-        const auto& null_mask = src.GetNullMask();
-        for (size_t i = 0; i < data.size(); ++i) {
-            if (!m.Get(i)) {
-                continue;
-            }
-            if (null_mask.Get(i)) {
-                dst.AppendNull();
-            } else {
-                dst.Append(data[i]);
-            }
-        }
-    } else {
-        for (size_t i = 0; i < data.size(); ++i) {
-            if (m.Get(i)) {
-                dst.Append(data[i]);
-            }
-        }
-    }
-}
-
-void FilterString(const core::StringColumn& src, const core::BoolColumn& mask,
-                  core::StringColumn& dst) {
-    const auto& m = mask.GetData();
-    size_t rows = src.Size();
-    for (size_t i = 0; i < rows; ++i) {
-        if (!m.Get(i)) {
-            continue;
-        }
-        if (src.IsNull(i)) {
-            dst.AppendNull();
-        } else {
-            dst.Append(src.Get(i));
-        }
-    }
-}
-
-void FilterBool(const core::BoolColumn& src, const core::BoolColumn& mask, core::BoolColumn& dst) {
-    const auto& m = mask.GetData();
-    size_t rows = src.Size();
-    for (size_t i = 0; i < rows; ++i) {
-        if (!m.Get(i)) {
-            continue;
-        }
-        if (src.IsNull(i)) {
-            dst.AppendNull();
-        } else {
-            dst.Append(src.Get(i));
-        }
-    }
-}
-
-void FilterColumn(const core::Column& src, const core::BoolColumn& mask, core::Column& dst) {
-    switch (src.GetDataType()) {
-        case core::DataType::Int16:
-            return FilterNumeric(static_cast<const core::Int16Column&>(src), mask,
-                                 static_cast<core::Int16Column&>(dst));
-        case core::DataType::Int32:
-            return FilterNumeric(static_cast<const core::Int32Column&>(src), mask,
-                                 static_cast<core::Int32Column&>(dst));
-        case core::DataType::Int64:
-            return FilterNumeric(static_cast<const core::Int64Column&>(src), mask,
-                                 static_cast<core::Int64Column&>(dst));
-        case core::DataType::Double:
-            return FilterNumeric(static_cast<const core::DoubleColumn&>(src), mask,
-                                 static_cast<core::DoubleColumn&>(dst));
-        case core::DataType::Date:
-            return FilterNumeric(static_cast<const core::DateColumn&>(src), mask,
-                                 static_cast<core::DateColumn&>(dst));
-        case core::DataType::Timestamp:
-            return FilterNumeric(static_cast<const core::TimestampColumn&>(src), mask,
-                                 static_cast<core::TimestampColumn&>(dst));
-        case core::DataType::Char:
-            return FilterNumeric(static_cast<const core::CharColumn&>(src), mask,
-                                 static_cast<core::CharColumn&>(dst));
-        case core::DataType::String:
-            return FilterString(static_cast<const core::StringColumn&>(src), mask,
-                                static_cast<core::StringColumn&>(dst));
-        case core::DataType::Bool:
-            return FilterBool(static_cast<const core::BoolColumn&>(src), mask,
-                              static_cast<core::BoolColumn&>(dst));
-    }
-    THROW_RUNTIME_ERROR("Unsupported column type for filter");
 }
 
 template <typename Cmp>
@@ -615,86 +535,109 @@ std::unique_ptr<core::Column> CaseSelect(const core::BoolColumn& mask,
     return out;
 }
 
-core::Batch ApplyFilter(const core::Batch& batch, const core::BoolColumn& mask) {
-    size_t rows = batch.RowsCount();
-    if (mask.Size() != rows) {
-        THROW_RUNTIME_ERROR("ApplyFilter: mask size mismatch");
+std::vector<uint32_t> MaskToSelection(const core::BoolColumn& mask) {
+    std::vector<uint32_t> selection;
+    selection.reserve(mask.GetData().PopCount());
+    size_t rows = mask.Size();
+    for (size_t i = 0; i < rows; ++i) {
+        if (mask.Get(i)) {
+            selection.push_back(static_cast<uint32_t>(i));
+        }
     }
-    size_t selected = mask.GetData().PopCount();
-    core::Batch out(batch.GetSchema(), selected);
+    return selection;
+}
+
+core::Batch Materialize(const core::Batch& batch) {
+    if (!batch.HasSelection()) {
+        THROW_RUNTIME_ERROR("Materialize: batch has no selection");
+    }
+    const auto& selection = batch.Selection();
+    core::Batch out(batch.GetSchema(), selection.size());
     for (size_t col = 0; col < batch.ColumnsCount(); ++col) {
-        FilterColumn(batch.ColumnAt(col), mask, out.ColumnAt(col));
+        const auto& src = batch.ColumnAt(col);
+        auto& dst = out.ColumnAt(col);
+        for (uint32_t row : selection) {
+            AppendRow(dst, src, row);
+        }
     }
     return out;
 }
 
-ScalarReduction<int64_t> SumInt(const core::Column& col) {
-    return VisitIntegerCol(col, [](const auto& typed) { return SumImpl<int64_t>(typed); });
+ScalarReduction<int64_t> SumInt(const core::Column& col, const std::vector<uint32_t>* selection) {
+    return VisitIntegerCol(col,
+                           [&](const auto& typed) { return SumImpl<int64_t>(typed, selection); });
 }
 
-ScalarReduction<long double> SumDouble(const core::Column& col) {
-    return VisitNumericCol(col, [](const auto& typed) { return SumImpl<long double>(typed); });
+ScalarReduction<long double> SumDouble(const core::Column& col,
+                                       const std::vector<uint32_t>* selection) {
+    return VisitNumericCol(
+        col, [&](const auto& typed) { return SumImpl<long double>(typed, selection); });
 }
 
-ScalarReduction<int64_t> MinInt(const core::Column& col) {
-    return VisitIntegerCol(col, [](const auto& typed) {
-        return MinMaxImpl<int64_t>(typed, [](int64_t a, int64_t b) { return a < b; });
+ScalarReduction<int64_t> MinInt(const core::Column& col, const std::vector<uint32_t>* selection) {
+    return VisitIntegerCol(col, [&](const auto& typed) {
+        return MinMaxImpl<int64_t>(typed, selection, [](int64_t a, int64_t b) { return a < b; });
     });
 }
 
-ScalarReduction<int64_t> MaxInt(const core::Column& col) {
-    return VisitIntegerCol(col, [](const auto& typed) {
-        return MinMaxImpl<int64_t>(typed, [](int64_t a, int64_t b) { return a > b; });
+ScalarReduction<int64_t> MaxInt(const core::Column& col, const std::vector<uint32_t>* selection) {
+    return VisitIntegerCol(col, [&](const auto& typed) {
+        return MinMaxImpl<int64_t>(typed, selection, [](int64_t a, int64_t b) { return a > b; });
     });
 }
 
-ScalarReduction<double> MinDouble(const core::Column& col) {
-    return VisitNumericCol(col, [](const auto& typed) {
-        return MinMaxImpl<double>(typed, [](double a, double b) { return a < b; });
+ScalarReduction<double> MinDouble(const core::Column& col, const std::vector<uint32_t>* selection) {
+    return VisitNumericCol(col, [&](const auto& typed) {
+        return MinMaxImpl<double>(typed, selection, [](double a, double b) { return a < b; });
     });
 }
 
-ScalarReduction<double> MaxDouble(const core::Column& col) {
-    return VisitNumericCol(col, [](const auto& typed) {
-        return MinMaxImpl<double>(typed, [](double a, double b) { return a > b; });
+ScalarReduction<double> MaxDouble(const core::Column& col, const std::vector<uint32_t>* selection) {
+    return VisitNumericCol(col, [&](const auto& typed) {
+        return MinMaxImpl<double>(typed, selection, [](double a, double b) { return a > b; });
     });
 }
 
 namespace {
 template <typename Better>
-ScalarReduction<std::string> MinMaxStringImpl(const core::Column& col, Better better) {
+ScalarReduction<std::string> MinMaxStringImpl(const core::Column& col,
+                                              const std::vector<uint32_t>* selection,
+                                              Better better) {
     if (col.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("MIN/MAX string: not a string column");
     }
     auto& s = static_cast<const core::StringColumn&>(col);
     ScalarReduction<std::string> r;
-    size_t rows = s.Size();
-    for (size_t i = 0; i < rows; ++i) {
+    ForLogicalRows(selection, s.Size(), [&](size_t i) {
         if (s.IsNull(i)) {
-            continue;
+            return;
         }
         auto v = s.Get(i);
         if (!r.has_value || better(v, std::string_view(r.value))) {
             r.value.assign(v.data(), v.size());
             r.has_value = true;
         }
-    }
+    });
     return r;
 }
 }  // namespace
 
-ScalarReduction<std::string> MinString(const core::Column& col) {
-    return MinMaxStringImpl(col, [](std::string_view a, std::string_view b) { return a < b; });
+ScalarReduction<std::string> MinString(const core::Column& col,
+                                       const std::vector<uint32_t>* selection) {
+    return MinMaxStringImpl(col, selection,
+                            [](std::string_view a, std::string_view b) { return a < b; });
 }
 
-ScalarReduction<std::string> MaxString(const core::Column& col) {
-    return MinMaxStringImpl(col, [](std::string_view a, std::string_view b) { return a > b; });
+ScalarReduction<std::string> MaxString(const core::Column& col,
+                                       const std::vector<uint32_t>* selection) {
+    return MinMaxStringImpl(col, selection,
+                            [](std::string_view a, std::string_view b) { return a > b; });
 }
 
-AvgPartial Avg(const core::Column& col) {
-    return VisitIntegerCol(col, [](const auto& typed) {
+AvgPartial Avg(const core::Column& col, const std::vector<uint32_t>* selection) {
+    return VisitIntegerCol(col, [&](const auto& typed) {
         AvgPartial r;
-        ForEachNonNull(typed, [&](auto v) {
+        ForEachNonNull(typed, selection, [&](auto v) {
             r.int_sum += static_cast<__int128>(v);
             ++r.count;
         });
@@ -702,36 +645,36 @@ AvgPartial Avg(const core::Column& col) {
     });
 }
 
-uint64_t CountNonNull(const core::Column& col) {
+uint64_t CountNonNull(const core::Column& col, const std::vector<uint32_t>* selection) {
     if (!col.IsNullable()) {
-        return col.Size();
+        return selection != nullptr ? selection->size() : col.Size();
     }
-    size_t rows = col.Size();
     uint64_t c = 0;
-    for (size_t i = 0; i < rows; ++i) {
+    ForLogicalRows(selection, col.Size(), [&](size_t i) {
         if (!col.IsNull(i)) {
             ++c;
         }
-    }
+    });
     return c;
 }
 
-void DistinctInts(const core::Column& col, std::unordered_set<int64_t>& out) {
+void DistinctInts(const core::Column& col, std::unordered_set<int64_t>& out,
+                  const std::vector<uint32_t>* selection) {
     VisitIntegerCol(col, [&](const auto& typed) {
-        ForEachNonNull(typed, [&](auto v) { out.insert(static_cast<int64_t>(v)); });
+        ForEachNonNull(typed, selection, [&](auto v) { out.insert(static_cast<int64_t>(v)); });
     });
 }
 
-void DistinctStrings(const core::Column& col, std::unordered_set<std::string>& out) {
+void DistinctStrings(const core::Column& col, std::unordered_set<std::string>& out,
+                     const std::vector<uint32_t>* selection) {
     if (col.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("DistinctStrings: not a string column");
     }
     auto& s = static_cast<const core::StringColumn&>(col);
-    size_t rows = s.Size();
-    for (size_t i = 0; i < rows; ++i) {
+    ForLogicalRows(selection, s.Size(), [&](size_t i) {
         if (!s.IsNull(i)) {
             out.emplace(s.Get(i));
         }
-    }
+    });
 }
 }  // namespace columnar::exec::kernel

@@ -78,13 +78,16 @@ private:
     static KeyMode SelectKeyMode(const std::vector<ProjectionUnit>& keys);
 
     void ConsumeInt64(const core::Column& key_col, const std::vector<const core::Column*>& agg_cols,
-                      size_t rows);
+                      const std::vector<uint32_t>* selection, size_t rows);
     void ConsumeString(const core::Column& key_col,
-                       const std::vector<const core::Column*>& agg_cols, size_t rows);
+                       const std::vector<const core::Column*>& agg_cols,
+                       const std::vector<uint32_t>* selection, size_t rows);
     void ConsumeInt64Pair(const core::Column& first_key_col, const core::Column& second_key_col,
-                          const std::vector<const core::Column*>& agg_cols, size_t rows);
+                          const std::vector<const core::Column*>& agg_cols,
+                          const std::vector<uint32_t>* selection, size_t rows);
     void ConsumeComposite(const std::vector<const core::Column*>& key_cols,
-                          const std::vector<const core::Column*>& agg_cols, size_t rows);
+                          const std::vector<const core::Column*>& agg_cols,
+                          const std::vector<uint32_t>* selection, size_t rows);
 
     void UpdateAggsForRow(States& states, const std::vector<const core::Column*>& agg_cols,
                           size_t row);
@@ -94,6 +97,7 @@ private:
     std::vector<AggregationUnit> aggregations_;
     core::Schema output_schema_;
     KeyMode mode_;
+    bool needs_dense_;
     Int64Groups int64_groups_;
     StringGroups string_groups_;
     Int64PairGroups int64_pair_groups_;

@@ -166,6 +166,11 @@ core::DataType GetExpressionType(const Expression& expr) {
     THROW_RUNTIME_ERROR("Unsupported expression type");
 }
 
+bool IsTrivialExpression(const Expression& expr) {
+    return expr.type == ExpressionType::Column || expr.type == ExpressionType::ConstInt64 ||
+           expr.type == ExpressionType::ConstString;
+}
+
 void CollectColumns(const Expression& expr, std::vector<std::string>& columns) {
     switch (expr.type) {
         case ExpressionType::Column:

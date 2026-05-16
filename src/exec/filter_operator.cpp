@@ -7,10 +7,13 @@
 
 namespace columnar::exec {
 void FilterSink::Consume(core::Batch batch) {
-    size_t rows = batch.RowsCount();
-    if (rows == 0) {
+    if (batch.RowsCount() == 0) {
         return;
     }
+    if (batch.HasSelection()) {
+        batch = kernel::Materialize(batch);
+    }
+    size_t rows = batch.RowsCount();
 
     auto result = Evaluate(batch, *condition_);
     if (result.Get().GetDataType() != core::DataType::Bool) {
@@ -27,6 +30,7 @@ void FilterSink::Consume(core::Batch batch) {
         return;
     }
 
-    downstream_.Consume(kernel::ApplyFilter(batch, mask));
+    batch.SetSelection(kernel::MaskToSelection(mask));
+    downstream_.Consume(std::move(batch));
 }
 }  // namespace columnar::exec

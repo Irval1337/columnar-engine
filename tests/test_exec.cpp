@@ -297,6 +297,24 @@ TEST(ProjectOperator, ConstantColumn) {
     EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "42");
 }
 
+TEST(GlobalAggregation, FilteredReductionsUseSelection) {
+    auto width = exec::MakeColumnExpr("ResolutionWidth", core::DataType::Int64);
+    auto filter = exec::MakeFilter(
+        exec::MakeScan(),
+        exec::MakeBinary(exec::BinaryFunction::Equal,
+                         exec::MakeColumnExpr("CounterID", core::DataType::Int64),
+                         exec::MakeConst(static_cast<int64_t>(62))));
+    auto plan = exec::MakeGlobalAggregation(
+        std::move(filter), {exec::Sum(width, "sum_width"), exec::Count("c"),
+                            exec::Min(width, "min_width"), exec::Max(width, "max_width")});
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.ColumnsCount(), 4);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "300");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "2");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "100");
+    EXPECT_EQ(result.ColumnAt(3).GetAsString(0), "200");
+}
+
 TEST(HashAggregation, GroupByIntKey) {
     auto plan = exec::MakeHashAggregation(exec::MakeScan(),
                                           exec::MakeColumnExpr("UserID", core::DataType::Int64),

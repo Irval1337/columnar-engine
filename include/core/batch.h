@@ -4,6 +4,10 @@
 #include <core/schema.h>
 #include <util/macro.h>
 
+#include <cassert>
+#include <cstdint>
+#include <vector>
+
 namespace columnar::core {
 class Batch {
 public:
@@ -33,6 +37,23 @@ public:
             return 0;
         }
         return columns_[0]->Size();
+    }
+
+    bool HasSelection() const {
+        return has_selection_;
+    }
+
+    const std::vector<uint32_t>& Selection() const {
+        return selection_;
+    }
+
+    void SetSelection(std::vector<uint32_t> selection) {
+        selection_ = std::move(selection);
+        has_selection_ = true;
+    }
+
+    size_t SelectedRowsCount() const {
+        return has_selection_ ? selection_.size() : RowsCount();
     }
 
     void Reserve(size_t n) {
@@ -71,5 +92,7 @@ public:
 private:
     Schema schema_;
     std::vector<std::unique_ptr<Column>> columns_;
+    std::vector<uint32_t> selection_;
+    bool has_selection_ = false;
 };
 }  // namespace columnar::core

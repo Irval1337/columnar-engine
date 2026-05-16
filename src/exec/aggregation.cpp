@@ -70,7 +70,7 @@ std::vector<AggregationState> MakeAggregationStates(
 }
 
 void UpdateAggregationState(AggregationState& state, const AggregationUnit& unit,
-                            const core::Column& col) {
+                            const core::Column& col, const std::vector<uint32_t>* selection) {
     auto type = col.GetDataType();
     if (unit.type == AggregationType::Count) {
         return;
@@ -81,13 +81,13 @@ void UpdateAggregationState(AggregationState& state, const AggregationUnit& unit
         }
         auto& sum = std::get<SumState>(state);
         if (type == core::DataType::Double) {
-            auto part = kernel::SumDouble(col);
+            auto part = kernel::SumDouble(col, selection);
             if (part.has_value) {
                 sum.double_value += part.value;
                 sum.has_value = true;
             }
         } else {
-            auto part = kernel::SumInt(col);
+            auto part = kernel::SumInt(col, selection);
             if (part.has_value) {
                 sum.int_value += part.value;
                 sum.has_value = true;
@@ -99,7 +99,7 @@ void UpdateAggregationState(AggregationState& state, const AggregationUnit& unit
         if (!HasIntegerValue(type)) {
             THROW_RUNTIME_ERROR("AVG supports only integer-like columns");
         }
-        auto part = kernel::Avg(col);
+        auto part = kernel::Avg(col, selection);
         auto& avg = std::get<AvgState>(state);
         avg.int_sum += part.int_sum;
         avg.count += part.count;
@@ -108,9 +108,9 @@ void UpdateAggregationState(AggregationState& state, const AggregationUnit& unit
     if (unit.type == AggregationType::Distinct) {
         auto& distinct = std::get<DistinctState>(state);
         if (type == core::DataType::String) {
-            kernel::DistinctStrings(col, distinct.strings);
+            kernel::DistinctStrings(col, distinct.strings, selection);
         } else if (HasIntegerValue(type)) {
-            kernel::DistinctInts(col, distinct.ints);
+            kernel::DistinctInts(col, distinct.ints, selection);
         } else {
             THROW_RUNTIME_ERROR("COUNT DISTINCT supports only integer-like and string columns");
         }
@@ -120,7 +120,8 @@ void UpdateAggregationState(AggregationState& state, const AggregationUnit& unit
         bool is_min = unit.type == AggregationType::Min;
         auto& min_max = std::get<MinMaxState>(state);
         if (type == core::DataType::String) {
-            auto part = is_min ? kernel::MinString(col) : kernel::MaxString(col);
+            auto part =
+                is_min ? kernel::MinString(col, selection) : kernel::MaxString(col, selection);
             if (part.has_value &&
                 (!min_max.has_value || (is_min ? part.value < min_max.string_value
                                                : part.value > min_max.string_value))) {
@@ -128,7 +129,8 @@ void UpdateAggregationState(AggregationState& state, const AggregationUnit& unit
                 min_max.has_value = true;
             }
         } else if (type == core::DataType::Double) {
-            auto part = is_min ? kernel::MinDouble(col) : kernel::MaxDouble(col);
+            auto part =
+                is_min ? kernel::MinDouble(col, selection) : kernel::MaxDouble(col, selection);
             if (part.has_value &&
                 (!min_max.has_value || (is_min ? part.value < min_max.double_value
                                                : part.value > min_max.double_value))) {
@@ -136,7 +138,7 @@ void UpdateAggregationState(AggregationState& state, const AggregationUnit& unit
                 min_max.has_value = true;
             }
         } else if (HasIntegerValue(type)) {
-            auto part = is_min ? kernel::MinInt(col) : kernel::MaxInt(col);
+            auto part = is_min ? kernel::MinInt(col, selection) : kernel::MaxInt(col, selection);
             if (part.has_value &&
                 (!min_max.has_value ||
                  (is_min ? part.value < min_max.int_value : part.value > min_max.int_value))) {
