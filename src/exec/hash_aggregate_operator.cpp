@@ -42,7 +42,7 @@ void HashCombine(size_t& seed, size_t value) noexcept {
 }
 }  // namespace
 
-size_t HashAggregationSink::GroupKeyHash::operator()(const GroupKey& key) const noexcept {
+size_t HashAggregationSink::CompositeKeyHash::operator()(const CompositeKey& key) const noexcept {
     size_t seed = key.size();
     for (auto& component : key) {
         std::visit(
@@ -59,17 +59,37 @@ size_t HashAggregationSink::GroupKeyHash::operator()(const GroupKey& key) const 
     return seed;
 }
 
+size_t HashAggregationSink::Int64PairHash::operator()(const Int64Pair& key) const noexcept {
+    size_t seed = 2;
+    HashCombine(seed, std::hash<int64_t>{}(key.first));
+    HashCombine(seed, std::hash<int64_t>{}(key.second));
+    return seed;
+}
+
 HashAggregationSink::KeyMode HashAggregationSink::SelectKeyMode(
     const std::vector<ProjectionUnit>& keys) {
+    if (keys.size() == 2) {
+        auto first_type = GetExpressionType(*keys[0].expression);
+        auto second_type = GetExpressionType(*keys[1].expression);
+        if ((HasIntegerValue(first_type) || first_type == core::DataType::Timestamp ||
+             first_type == core::DataType::Date) &&
+            (HasIntegerValue(second_type) || second_type == core::DataType::Timestamp ||
+             second_type == core::DataType::Date)) {
+            return KeyMode::Int64Pair;
+        }
+    }
     if (keys.size() != 1) {
-        return KeyMode::Generic;
+        return KeyMode::Composite;
     }
-
-    auto type = GetExpressionType(*keys.front().expression);
+    auto type = GetExpressionType(*keys[0].expression);
     if (type == core::DataType::String) {
-        return KeyMode::SingleString;
+        return KeyMode::String;
     }
-    return KeyMode::SingleInt64;
+    if (HasIntegerValue(type) || type == core::DataType::Timestamp ||
+        type == core::DataType::Date) {
+        return KeyMode::Int64;
+    }
+    return KeyMode::Composite;
 }
 
 HashAggregationSink::HashAggregationSink(IOperator& downstream, std::vector<ProjectionUnit> keys,
@@ -94,25 +114,28 @@ void HashAggregationSink::UpdateAggsForRow(States& states,
     }
 }
 
-void HashAggregationSink::ConsumeSingleInt64(const core::Column& key_col,
-                                             const std::vector<const core::Column*>& agg_cols,
-                                             size_t rows) {
-    for (size_t row = 0; row < rows; ++row) {
-        if (key_col.IsNull(row)) {
-            continue;
+void HashAggregationSink::ConsumeInt64(const core::Column& key_col,
+                                       const std::vector<const core::Column*>& agg_cols,
+                                       size_t rows) {
+    VisitIntegerCol(key_col, [&](const auto& typed) {
+        const util::BitVector* mask = typed.IsNullable() ? &typed.GetNullMask() : nullptr;
+        for (size_t row = 0; row < rows; ++row) {
+            if (mask != nullptr && mask->Get(row)) {
+                continue;
+            }
+            int64_t key = static_cast<int64_t>(ReadTypedValue(typed, row));
+            auto it = int64_groups_.find(key);
+            if (it == int64_groups_.end()) {
+                it = int64_groups_.emplace(key, MakeAggregationStates(aggregations_)).first;
+            }
+            UpdateAggsForRow(it->second, agg_cols, row);
         }
-        int64_t key = ReadIntegerRow(key_col, row);
-        auto it = int64_groups_.find(key);
-        if (it == int64_groups_.end()) {
-            it = int64_groups_.emplace(key, MakeAggregationStates(aggregations_)).first;
-        }
-        UpdateAggsForRow(it->second, agg_cols, row);
-    }
+    });
 }
 
-void HashAggregationSink::ConsumeSingleString(const core::Column& key_col,
-                                              const std::vector<const core::Column*>& agg_cols,
-                                              size_t rows) {
+void HashAggregationSink::ConsumeString(const core::Column& key_col,
+                                        const std::vector<const core::Column*>& agg_cols,
+                                        size_t rows) {
     auto& s = static_cast<const core::StringColumn&>(key_col);
     for (size_t row = 0; row < rows; ++row) {
         if (s.IsNull(row)) {
@@ -128,13 +151,42 @@ void HashAggregationSink::ConsumeSingleString(const core::Column& key_col,
     }
 }
 
-void HashAggregationSink::ConsumeGeneric(const std::vector<const core::Column*>& key_cols,
-                                         const std::vector<const core::Column*>& agg_cols,
-                                         size_t rows) {
-    GroupKey key;
+void HashAggregationSink::ConsumeInt64Pair(const core::Column& first_key_col,
+                                           const core::Column& second_key_col,
+                                           const std::vector<const core::Column*>& agg_cols,
+                                           size_t rows) {
+    VisitIntegerCol(first_key_col, [&](const auto& first_typed) {
+        VisitIntegerCol(second_key_col, [&](const auto& second_typed) {
+            const util::BitVector* first_mask =
+                first_typed.IsNullable() ? &first_typed.GetNullMask() : nullptr;
+            const util::BitVector* second_mask =
+                second_typed.IsNullable() ? &second_typed.GetNullMask() : nullptr;
+            for (size_t row = 0; row < rows; ++row) {
+                if ((first_mask != nullptr && first_mask->Get(row)) ||
+                    (second_mask != nullptr && second_mask->Get(row))) {
+                    continue;
+                }
+                Int64Pair key{static_cast<int64_t>(ReadTypedValue(first_typed, row)),
+                              static_cast<int64_t>(ReadTypedValue(second_typed, row))};
+                auto it = int64_pair_groups_.find(key);
+                if (it == int64_pair_groups_.end()) {
+                    it =
+                        int64_pair_groups_.emplace(key, MakeAggregationStates(aggregations_)).first;
+                }
+                UpdateAggsForRow(it->second, agg_cols, row);
+            }
+        });
+    });
+}
+
+void HashAggregationSink::ConsumeComposite(const std::vector<const core::Column*>& key_cols,
+                                           const std::vector<const core::Column*>& agg_cols,
+                                           size_t rows) {
+    CompositeKey key;
     key.reserve(key_cols.size());
     for (size_t row = 0; row < rows; ++row) {
         key.clear();
+        key.reserve(key_cols.size());
         bool has_null_key = false;
         for (auto* col : key_cols) {
             if (col->IsNull(row)) {
@@ -151,9 +203,10 @@ void HashAggregationSink::ConsumeGeneric(const std::vector<const core::Column*>&
             continue;
         }
 
-        auto it = groups_.find(key);
-        if (it == groups_.end()) {
-            it = groups_.emplace(std::move(key), MakeAggregationStates(aggregations_)).first;
+        auto it = composite_groups_.find(key);
+        if (it == composite_groups_.end()) {
+            it = composite_groups_.emplace(std::move(key), MakeAggregationStates(aggregations_))
+                     .first;
         }
         UpdateAggsForRow(it->second, agg_cols, row);
     }
@@ -185,23 +238,27 @@ void HashAggregationSink::Consume(core::Batch batch) {
         agg_cols[i] = &agg_evals.back().Get();
     }
 
-    if (mode_ == KeyMode::SingleInt64) {
-        ConsumeSingleInt64(*key_cols.front(), agg_cols, rows);
-    } else if (mode_ == KeyMode::SingleString) {
-        ConsumeSingleString(*key_cols.front(), agg_cols, rows);
-    } else {
-        ConsumeGeneric(key_cols, agg_cols, rows);
+    switch (mode_) {
+        case KeyMode::Int64:
+            ConsumeInt64(*key_cols[0], agg_cols, rows);
+            return;
+        case KeyMode::String:
+            ConsumeString(*key_cols[0], agg_cols, rows);
+            return;
+        case KeyMode::Int64Pair:
+            ConsumeInt64Pair(*key_cols[0], *key_cols[1], agg_cols, rows);
+            return;
+        case KeyMode::Composite:
+            ConsumeComposite(key_cols, agg_cols, rows);
+            return;
     }
 }
 
 void HashAggregationSink::Finalize() {
-    size_t groups_count = groups_.size();
-    if (mode_ == KeyMode::SingleInt64) {
-        groups_count = int64_groups_.size();
-    } else if (mode_ == KeyMode::SingleString) {
-        groups_count = string_groups_.size();
-    }
-
+    size_t groups_count = mode_ == KeyMode::Int64       ? int64_groups_.size()
+                          : mode_ == KeyMode::String    ? string_groups_.size()
+                          : mode_ == KeyMode::Int64Pair ? int64_pair_groups_.size()
+                                                        : composite_groups_.size();
     core::Batch out(output_schema_, groups_count);
 
     auto append_aggs = [&](const States& states) {
@@ -210,20 +267,24 @@ void HashAggregationSink::Finalize() {
         }
     };
 
-    if (mode_ == KeyMode::SingleInt64) {
-        auto& key_out = out.ColumnAt(0);
+    if (mode_ == KeyMode::Int64) {
         for (auto& [key, states] : int64_groups_) {
-            AppendInteger(key_out, key);
+            AppendInteger(out.ColumnAt(0), key);
             append_aggs(states);
         }
-    } else if (mode_ == KeyMode::SingleString) {
-        auto& key_out = out.ColumnAt(0);
+    } else if (mode_ == KeyMode::String) {
         for (auto& [key, states] : string_groups_) {
-            static_cast<core::StringColumn&>(key_out).Append(key);
+            static_cast<core::StringColumn&>(out.ColumnAt(0)).Append(key);
+            append_aggs(states);
+        }
+    } else if (mode_ == KeyMode::Int64Pair) {
+        for (auto& [key, states] : int64_pair_groups_) {
+            AppendInteger(out.ColumnAt(0), key.first);
+            AppendInteger(out.ColumnAt(1), key.second);
             append_aggs(states);
         }
     } else {
-        for (auto& [key, states] : groups_) {
+        for (auto& [key, states] : composite_groups_) {
             for (size_t i = 0; i < keys_.size(); ++i) {
                 auto& key_out = out.ColumnAt(i);
                 std::visit(

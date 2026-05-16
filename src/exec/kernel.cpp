@@ -17,26 +17,7 @@
 
 namespace columnar::exec::kernel {
 namespace {
-template <typename V>
-decltype(auto) VisitIntegerCol(const core::Column& col, V&& v) {
-    switch (col.GetDataType()) {
-        case core::DataType::Int16:
-            return v(static_cast<const core::Int16Column&>(col));
-        case core::DataType::Int32:
-            return v(static_cast<const core::Int32Column&>(col));
-        case core::DataType::Int64:
-            return v(static_cast<const core::Int64Column&>(col));
-        case core::DataType::Date:
-            return v(static_cast<const core::DateColumn&>(col));
-        case core::DataType::Timestamp:
-            return v(static_cast<const core::TimestampColumn&>(col));
-        case core::DataType::Char:
-            return v(static_cast<const core::CharColumn&>(col));
-        default:
-            break;
-    }
-    THROW_RUNTIME_ERROR("Column is not integer-typed");
-}
+using ::columnar::exec::VisitIntegerCol;
 
 template <typename V>
 decltype(auto) VisitNumericCol(const core::Column& col, V&& v) {
@@ -69,6 +50,23 @@ void ForEachNonNull(const Col& col, F&& f) {
     }
 }
 
+template <typename F>
+void ForEachNonNull(const core::BoolColumn& col, F&& f) {
+    size_t rows = col.Size();
+    if (col.IsNullable()) {
+        const auto& mask = col.GetNullMask();
+        for (size_t i = 0; i < rows; ++i) {
+            if (!mask.Get(i)) {
+                f(col.Get(i));
+            }
+        }
+    } else {
+        for (size_t i = 0; i < rows; ++i) {
+            f(col.Get(i));
+        }
+    }
+}
+
 template <typename Acc, typename Col>
 ScalarReduction<Acc> SumImpl(const Col& col) {
     ScalarReduction<Acc> r;
@@ -94,16 +92,14 @@ ScalarReduction<Acc> MinMaxImpl(const Col& col, Better&& better) {
 
 template <typename L, typename R, typename Cmp>
 std::unique_ptr<core::Column> ComparePair(const L& lhs, const R& rhs, Cmp&& cmp) {
-    const auto& ld = lhs.GetData();
-    const auto& rd = rhs.GetData();
-    size_t rows = ld.size();
-    if (rd.size() != rows) {
+    size_t rows = TypedColumnSize(lhs);
+    if (TypedColumnSize(rhs) != rows) {
         THROW_RUNTIME_ERROR("Compare: row count mismatch");
     }
     auto out = MakeBoolColumn(rows);
     if (!lhs.IsNullable() && !rhs.IsNullable()) {
         for (size_t i = 0; i < rows; ++i) {
-            out->Append(cmp(ld[i], rd[i]));
+            out->Append(cmp(ReadTypedValue(lhs, i), ReadTypedValue(rhs, i)));
         }
         return out;
     }
@@ -111,7 +107,7 @@ std::unique_ptr<core::Column> ComparePair(const L& lhs, const R& rhs, Cmp&& cmp)
     const util::BitVector* rmask = rhs.IsNullable() ? &rhs.GetNullMask() : nullptr;
     for (size_t i = 0; i < rows; ++i) {
         bool null = (lmask && lmask->Get(i)) || (rmask && rmask->Get(i));
-        out->Append(!null && cmp(ld[i], rd[i]));
+        out->Append(!null && cmp(ReadTypedValue(lhs, i), ReadTypedValue(rhs, i)));
     }
     return out;
 }
@@ -184,26 +180,39 @@ std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core:
     if (rhs.Size() != rows) {
         THROW_RUNTIME_ERROR("Arithmetic: row count mismatch");
     }
-    auto out = std::make_unique<core::Int64Column>(lhs.IsNullable() || rhs.IsNullable());
-    out->Reserve(rows);
+    bool nullable = lhs.IsNullable() || rhs.IsNullable();
+    std::vector<int64_t> data(rows);
+    util::BitVector mask = nullable ? util::BitVector(rows) : util::BitVector();
     VisitIntegerCol(lhs, [&](const auto& l) {
         VisitIntegerCol(rhs, [&](const auto& r) {
-            const auto& ld = l.GetData();
-            const auto& rd = r.GetData();
             const util::BitVector* lmask = l.IsNullable() ? &l.GetNullMask() : nullptr;
             const util::BitVector* rmask = r.IsNullable() ? &r.GetNullMask() : nullptr;
+            if (lmask == nullptr && rmask == nullptr) {
+                if (subtract) {
+                    for (size_t i = 0; i < rows; ++i) {
+                        data[i] = static_cast<int64_t>(ReadTypedValue(l, i)) -
+                                  static_cast<int64_t>(ReadTypedValue(r, i));
+                    }
+                } else {
+                    for (size_t i = 0; i < rows; ++i) {
+                        data[i] = static_cast<int64_t>(ReadTypedValue(l, i)) +
+                                  static_cast<int64_t>(ReadTypedValue(r, i));
+                    }
+                }
+                return;
+            }
             for (size_t i = 0; i < rows; ++i) {
-                if ((lmask && lmask->Get(i)) || (rmask && rmask->Get(i))) {
-                    out->AppendNull();
+                if ((lmask != nullptr && lmask->Get(i)) || (rmask != nullptr && rmask->Get(i))) {
+                    mask.Set(i);
                     continue;
                 }
-                auto a = static_cast<int64_t>(ld[i]);
-                auto b = static_cast<int64_t>(rd[i]);
-                out->Append(subtract ? a - b : a + b);
+                auto a = static_cast<int64_t>(ReadTypedValue(l, i));
+                auto b = static_cast<int64_t>(ReadTypedValue(r, i));
+                data[i] = subtract ? a - b : a + b;
             }
         });
     });
-    return out;
+    return std::make_unique<core::Int64Column>(std::move(data), std::move(mask), nullable);
 }
 
 template <typename Col>
@@ -294,6 +303,46 @@ void FilterColumn(const core::Column& src, const core::BoolColumn& mask, core::C
     }
     THROW_RUNTIME_ERROR("Unsupported column type for filter");
 }
+
+template <typename Cmp>
+std::unique_ptr<core::Column> CompareIntConst(const core::Column& col, int64_t value, Cmp cmp) {
+    return VisitIntegerCol(col, [&](const auto& typed) -> std::unique_ptr<core::Column> {
+        size_t rows = TypedColumnSize(typed);
+        auto out = MakeBoolColumn(rows);
+        if (!typed.IsNullable()) {
+            for (size_t i = 0; i < rows; ++i) {
+                out->Append(cmp(static_cast<int64_t>(ReadTypedValue(typed, i)), value));
+            }
+            return out;
+        }
+        const auto& mask = typed.GetNullMask();
+        for (size_t i = 0; i < rows; ++i) {
+            out->Append(!mask.Get(i) && cmp(static_cast<int64_t>(ReadTypedValue(typed, i)), value));
+        }
+        return out;
+    });
+}
+
+template <typename Cmp>
+std::unique_ptr<core::Column> CompareStringConst(const core::Column& col, std::string_view value,
+                                                 Cmp cmp) {
+    if (col.GetDataType() != core::DataType::String) {
+        THROW_RUNTIME_ERROR("CompareStringConst: expected string column");
+    }
+    auto& s = static_cast<const core::StringColumn&>(col);
+    size_t rows = s.Size();
+    auto out = MakeBoolColumn(rows);
+    if (!s.IsNullable()) {
+        for (size_t i = 0; i < rows; ++i) {
+            out->Append(cmp(s.Get(i), value));
+        }
+        return out;
+    }
+    for (size_t i = 0; i < rows; ++i) {
+        out->Append(!s.IsNull(i) && cmp(s.Get(i), value));
+    }
+    return out;
+}
 }  // namespace
 
 std::unique_ptr<core::Column> ConstInt64(int64_t value, size_t rows) {
@@ -336,6 +385,62 @@ std::unique_ptr<core::Column> Greater(const core::Column& lhs, const core::Colum
 
 std::unique_ptr<core::Column> GreaterOrEqual(const core::Column& lhs, const core::Column& rhs) {
     return CompareDispatch(lhs, rhs, [](auto a, auto b) { return a >= b; });
+}
+
+std::unique_ptr<core::Column> EqualConstInt(const core::Column& col, int64_t value) {
+    return CompareIntConst(col, value, [](int64_t a, int64_t b) { return a == b; });
+}
+
+std::unique_ptr<core::Column> NotEqualConstInt(const core::Column& col, int64_t value) {
+    return CompareIntConst(col, value, [](int64_t a, int64_t b) { return a != b; });
+}
+
+std::unique_ptr<core::Column> LessConstInt(const core::Column& col, int64_t value) {
+    return CompareIntConst(col, value, [](int64_t a, int64_t b) { return a < b; });
+}
+
+std::unique_ptr<core::Column> LessOrEqualConstInt(const core::Column& col, int64_t value) {
+    return CompareIntConst(col, value, [](int64_t a, int64_t b) { return a <= b; });
+}
+
+std::unique_ptr<core::Column> GreaterConstInt(const core::Column& col, int64_t value) {
+    return CompareIntConst(col, value, [](int64_t a, int64_t b) { return a > b; });
+}
+
+std::unique_ptr<core::Column> GreaterOrEqualConstInt(const core::Column& col, int64_t value) {
+    return CompareIntConst(col, value, [](int64_t a, int64_t b) { return a >= b; });
+}
+
+std::unique_ptr<core::Column> EqualConstString(const core::Column& col, std::string_view value) {
+    return CompareStringConst(col, value,
+                              [](std::string_view a, std::string_view b) { return a == b; });
+}
+
+std::unique_ptr<core::Column> NotEqualConstString(const core::Column& col, std::string_view value) {
+    return CompareStringConst(col, value,
+                              [](std::string_view a, std::string_view b) { return a != b; });
+}
+
+std::unique_ptr<core::Column> LessConstString(const core::Column& col, std::string_view value) {
+    return CompareStringConst(col, value,
+                              [](std::string_view a, std::string_view b) { return a < b; });
+}
+
+std::unique_ptr<core::Column> LessOrEqualConstString(const core::Column& col,
+                                                     std::string_view value) {
+    return CompareStringConst(col, value,
+                              [](std::string_view a, std::string_view b) { return a <= b; });
+}
+
+std::unique_ptr<core::Column> GreaterConstString(const core::Column& col, std::string_view value) {
+    return CompareStringConst(col, value,
+                              [](std::string_view a, std::string_view b) { return a > b; });
+}
+
+std::unique_ptr<core::Column> GreaterOrEqualConstString(const core::Column& col,
+                                                        std::string_view value) {
+    return CompareStringConst(col, value,
+                              [](std::string_view a, std::string_view b) { return a >= b; });
 }
 
 std::unique_ptr<core::Column> And(const core::Column& lhs, const core::Column& rhs) {

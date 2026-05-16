@@ -23,6 +23,22 @@ std::unique_ptr<core::Column> LessOrEqual(const core::Column& lhs, const core::C
 std::unique_ptr<core::Column> Greater(const core::Column& lhs, const core::Column& rhs);
 std::unique_ptr<core::Column> GreaterOrEqual(const core::Column& lhs, const core::Column& rhs);
 
+std::unique_ptr<core::Column> EqualConstInt(const core::Column& col, int64_t value);
+std::unique_ptr<core::Column> NotEqualConstInt(const core::Column& col, int64_t value);
+std::unique_ptr<core::Column> LessConstInt(const core::Column& col, int64_t value);
+std::unique_ptr<core::Column> LessOrEqualConstInt(const core::Column& col, int64_t value);
+std::unique_ptr<core::Column> GreaterConstInt(const core::Column& col, int64_t value);
+std::unique_ptr<core::Column> GreaterOrEqualConstInt(const core::Column& col, int64_t value);
+
+std::unique_ptr<core::Column> EqualConstString(const core::Column& col, std::string_view value);
+std::unique_ptr<core::Column> NotEqualConstString(const core::Column& col, std::string_view value);
+std::unique_ptr<core::Column> LessConstString(const core::Column& col, std::string_view value);
+std::unique_ptr<core::Column> LessOrEqualConstString(const core::Column& col,
+                                                     std::string_view value);
+std::unique_ptr<core::Column> GreaterConstString(const core::Column& col, std::string_view value);
+std::unique_ptr<core::Column> GreaterOrEqualConstString(const core::Column& col,
+                                                        std::string_view value);
+
 std::unique_ptr<core::Column> And(const core::Column& lhs, const core::Column& rhs);
 std::unique_ptr<core::Column> Or(const core::Column& lhs, const core::Column& rhs);
 

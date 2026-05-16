@@ -16,9 +16,9 @@ add_library(columnar_lib
   src/core/encoding/dictionary.cpp
   src/core/encoding/rle.cpp
   src/util/buffered_file.cpp
+  src/util/memory_mapped_file.cpp
   src/util/compression.cpp
   src/util/date_time.cpp
-  src/util/memory_mapped_file.cpp
   src/csv/csv_batch_reader.cpp
   src/csv/csv_batch_writer.cpp
   src/csv/csv_row_reader.cpp
@@ -44,7 +44,7 @@ target_include_directories(columnar_lib PRIVATE
   ${zstd_SOURCE_DIR}/lib
 )
 
-target_link_libraries(columnar_lib PRIVATE lz4_static libzstd_static)
+target_link_libraries(columnar_lib PRIVATE lz4_static libzstd_static absl::flat_hash_map)
 
 target_compile_options(columnar_lib PRIVATE -Wall -Wextra -Wpedantic)
 

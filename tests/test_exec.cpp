@@ -187,6 +187,18 @@ core::Batch RunPlan(std::shared_ptr<exec::Operator> plan) {
     return std::move(batches[0]);
 }
 
+core::Batch RunPlanOnBatch(const core::Batch& batch, std::shared_ptr<exec::Operator> plan) {
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    bruh::BruhBatchWriter writer(ss, batch.GetSchema());
+    writer.Write(batch);
+    writer.Flush();
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+    auto batches = exec::Execute(reader, std::move(plan));
+    EXPECT_EQ(batches.size(), 1);
+    return std::move(batches[0]);
+}
+
 size_t TotalRows(const std::vector<core::Batch>& batches) {
     size_t total = 0;
     for (auto& batch : batches) {
@@ -320,6 +332,37 @@ TEST(HashAggregation, GroupByStringKey) {
             EXPECT_EQ(count, "2");
         } else if (key == "beta") {
             EXPECT_EQ(count, "1");
+        } else {
+            FAIL() << "unexpected key: " << key;
+        }
+    }
+}
+
+TEST(HashAggregation, GroupByBoolKey) {
+    core::Schema schema(
+        {core::Field("flag", core::DataType::Bool), core::Field("value", core::DataType::Int64)});
+    core::Batch batch(schema);
+    batch.ColumnAt(0).AppendFromString("true");
+    batch.ColumnAt(1).AppendFromString("10");
+    batch.ColumnAt(0).AppendFromString("false");
+    batch.ColumnAt(1).AppendFromString("20");
+    batch.ColumnAt(0).AppendFromString("true");
+    batch.ColumnAt(1).AppendFromString("30");
+
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(), exec::MakeColumnExpr("flag", core::DataType::Bool), "flag",
+        {exec::Count("count"),
+         exec::Sum(exec::MakeColumnExpr("value", core::DataType::Int64), "sum")});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 2);
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        auto key = result.ColumnAt(0).GetAsString(row);
+        if (key == "1") {
+            EXPECT_EQ(result.ColumnAt(1).GetAsString(row), "2");
+            EXPECT_EQ(result.ColumnAt(2).GetAsString(row), "40");
+        } else if (key == "0") {
+            EXPECT_EQ(result.ColumnAt(1).GetAsString(row), "1");
+            EXPECT_EQ(result.ColumnAt(2).GetAsString(row), "20");
         } else {
             FAIL() << "unexpected key: " << key;
         }

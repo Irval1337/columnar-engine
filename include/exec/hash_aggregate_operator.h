@@ -4,12 +4,12 @@
 #include <exec/aggregation.h>
 #include <exec/operator.h>
 
+#include <absl/container/flat_hash_map.h>
+
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -24,12 +24,23 @@ public:
     void Finalize() override;
 
 private:
-    enum class KeyMode { SingleInt64, SingleString, Generic };
+    enum class KeyMode { Int64, String, Int64Pair, Composite };
 
-    using GroupKey = std::vector<std::variant<int64_t, std::string>>;
+    struct Int64Pair {
+        int64_t first = 0;
+        int64_t second = 0;
 
-    struct GroupKeyHash {
-        size_t operator()(const GroupKey& key) const noexcept;
+        bool operator==(const Int64Pair&) const = default;
+    };
+
+    using CompositeKey = std::vector<std::variant<int64_t, std::string>>;
+
+    struct CompositeKeyHash {
+        size_t operator()(const CompositeKey& key) const noexcept;
+    };
+
+    struct Int64PairHash {
+        size_t operator()(const Int64Pair& key) const noexcept;
     };
 
     struct StringHash {
@@ -59,18 +70,21 @@ private:
     };
 
     using States = std::vector<AggregationState>;
-    using Int64Groups = std::unordered_map<int64_t, States>;
-    using StringGroups = std::unordered_map<std::string, States, StringHash, StringEq>;
-    using GenericGroups = std::unordered_map<GroupKey, States, GroupKeyHash>;
+    using Int64Groups = absl::flat_hash_map<int64_t, States>;
+    using StringGroups = absl::flat_hash_map<std::string, States, StringHash, StringEq>;
+    using Int64PairGroups = absl::flat_hash_map<Int64Pair, States, Int64PairHash>;
+    using CompositeGroups = absl::flat_hash_map<CompositeKey, States, CompositeKeyHash>;
 
     static KeyMode SelectKeyMode(const std::vector<ProjectionUnit>& keys);
 
-    void ConsumeSingleInt64(const core::Column& key_col,
-                            const std::vector<const core::Column*>& agg_cols, size_t rows);
-    void ConsumeSingleString(const core::Column& key_col,
-                             const std::vector<const core::Column*>& agg_cols, size_t rows);
-    void ConsumeGeneric(const std::vector<const core::Column*>& key_cols,
-                        const std::vector<const core::Column*>& agg_cols, size_t rows);
+    void ConsumeInt64(const core::Column& key_col, const std::vector<const core::Column*>& agg_cols,
+                      size_t rows);
+    void ConsumeString(const core::Column& key_col,
+                       const std::vector<const core::Column*>& agg_cols, size_t rows);
+    void ConsumeInt64Pair(const core::Column& first_key_col, const core::Column& second_key_col,
+                          const std::vector<const core::Column*>& agg_cols, size_t rows);
+    void ConsumeComposite(const std::vector<const core::Column*>& key_cols,
+                          const std::vector<const core::Column*>& agg_cols, size_t rows);
 
     void UpdateAggsForRow(States& states, const std::vector<const core::Column*>& agg_cols,
                           size_t row);
@@ -82,6 +96,7 @@ private:
     KeyMode mode_;
     Int64Groups int64_groups_;
     StringGroups string_groups_;
-    GenericGroups groups_;
+    Int64PairGroups int64_pair_groups_;
+    CompositeGroups composite_groups_;
 };
 }  // namespace columnar::exec

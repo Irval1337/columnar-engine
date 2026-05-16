@@ -1,8 +1,10 @@
 #include <exec/expression.h>
-
 #include <core/columns/bool_column.h>
 #include <exec/kernel.h>
 #include <util/macro.h>
+
+#include <string_view>
+#include <utility>
 
 namespace columnar::exec {
 namespace {
@@ -43,6 +45,98 @@ std::unique_ptr<core::Column> EvalBinary(const core::Column& lhs, const core::Co
             return kernel::Subtract(lhs, rhs);
     }
     THROW_RUNTIME_ERROR("Unsupported binary function");
+}
+
+bool IsComparisonFunction(BinaryFunction f) {
+    return f == BinaryFunction::Equal || f == BinaryFunction::NotEqual ||
+           f == BinaryFunction::Less || f == BinaryFunction::LessOrEqual ||
+           f == BinaryFunction::Greater || f == BinaryFunction::GreaterOrEqual;
+}
+
+BinaryFunction FlipComparison(BinaryFunction f) {
+    switch (f) {
+        case BinaryFunction::Less:
+            return BinaryFunction::Greater;
+        case BinaryFunction::LessOrEqual:
+            return BinaryFunction::GreaterOrEqual;
+        case BinaryFunction::Greater:
+            return BinaryFunction::Less;
+        case BinaryFunction::GreaterOrEqual:
+            return BinaryFunction::LessOrEqual;
+        default:
+            return f;
+    }
+}
+
+std::unique_ptr<core::Column> EvalIntConstCompare(const core::Column& col, int64_t value,
+                                                  BinaryFunction f) {
+    switch (f) {
+        case BinaryFunction::Equal:
+            return kernel::EqualConstInt(col, value);
+        case BinaryFunction::NotEqual:
+            return kernel::NotEqualConstInt(col, value);
+        case BinaryFunction::Less:
+            return kernel::LessConstInt(col, value);
+        case BinaryFunction::LessOrEqual:
+            return kernel::LessOrEqualConstInt(col, value);
+        case BinaryFunction::Greater:
+            return kernel::GreaterConstInt(col, value);
+        case BinaryFunction::GreaterOrEqual:
+            return kernel::GreaterOrEqualConstInt(col, value);
+        default:
+            THROW_RUNTIME_ERROR("EvalIntConstCompare: not a comparison");
+    }
+}
+
+std::unique_ptr<core::Column> EvalStringConstCompare(const core::Column& col,
+                                                     std::string_view value, BinaryFunction f) {
+    switch (f) {
+        case BinaryFunction::Equal:
+            return kernel::EqualConstString(col, value);
+        case BinaryFunction::NotEqual:
+            return kernel::NotEqualConstString(col, value);
+        case BinaryFunction::Less:
+            return kernel::LessConstString(col, value);
+        case BinaryFunction::LessOrEqual:
+            return kernel::LessOrEqualConstString(col, value);
+        case BinaryFunction::Greater:
+            return kernel::GreaterConstString(col, value);
+        case BinaryFunction::GreaterOrEqual:
+            return kernel::GreaterOrEqualConstString(col, value);
+        default:
+            THROW_RUNTIME_ERROR("EvalStringConstCompare: not a comparison");
+    }
+}
+
+std::unique_ptr<core::Column> TryEvalConstCompare(const core::Batch& batch,
+                                                  const BinaryExpr& binary) {
+    if (!IsComparisonFunction(binary.function)) {
+        return nullptr;
+    }
+    const Expression* col_side = binary.lhs.get();
+    const Expression* const_side = binary.rhs.get();
+    bool flipped = false;
+    auto is_const = [](const Expression* e) {
+        return e->type == ExpressionType::ConstInt64 || e->type == ExpressionType::ConstString;
+    };
+    if (is_const(col_side)) {
+        std::swap(col_side, const_side);
+        flipped = true;
+    }
+    if (!is_const(const_side) || is_const(col_side)) {
+        return nullptr;
+    }
+    auto op = flipped ? FlipComparison(binary.function) : binary.function;
+    auto col_eval = Evaluate(batch, *col_side);
+    if (const_side->type == ExpressionType::ConstInt64) {
+        if (col_eval.Get().GetDataType() == core::DataType::String) {
+            return nullptr;
+        }
+        return EvalIntConstCompare(col_eval.Get(),
+                                   static_cast<const ConstInt64&>(*const_side).value, op);
+    }
+    return EvalStringConstCompare(col_eval.Get(),
+                                  static_cast<const ConstString&>(*const_side).value, op);
 }
 }  // namespace
 
@@ -119,6 +213,9 @@ EvalResult Evaluate(const core::Batch& batch, const Expression& expr) {
         }
         case ExpressionType::Binary: {
             auto& binary = static_cast<const BinaryExpr&>(expr);
+            if (auto fast = TryEvalConstCompare(batch, binary)) {
+                return EvalResult(std::move(fast));
+            }
             auto lhs = Evaluate(batch, *binary.lhs);
             auto rhs = Evaluate(batch, *binary.rhs);
             return EvalBinary(lhs.Get(), rhs.Get(), binary.function);
@@ -149,5 +246,4 @@ EvalResult Evaluate(const core::Batch& batch, const Expression& expr) {
     }
     THROW_RUNTIME_ERROR("Unsupported expression type");
 }
-
 }  // namespace columnar::exec
