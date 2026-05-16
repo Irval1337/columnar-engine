@@ -4,6 +4,7 @@
 #include <csv/csv_batch_writer.h>
 #include <exec/clickbench.h>
 #include <util/buffered_file.h>
+#include <util/memory_mapped_file.h>
 
 #include <iostream>
 #include <string>
@@ -47,8 +48,8 @@ int main(int argc, char** argv) {
     }
 
     try {
-        util::BufferedInputFile in(input);
-        auto batches = exec::ExecuteClickBenchQuery(in, static_cast<size_t>(query));
+        util::MemoryMappedInputFile in(input);
+        auto batches = exec::ExecuteClickBenchQuery(in.View(), static_cast<size_t>(query));
         if (output == "-") {
             WriteBatches(std::cout, batches, header);
         } else {

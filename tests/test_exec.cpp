@@ -81,7 +81,7 @@ void AppendRow(core::Batch& batch, const Row& r) {
     batch.ColumnAt(24).AppendFromString(std::to_string(r.trafic_source_id));
 }
 
-std::stringstream MakeClickBenchMiniFile() {
+std::string MakeClickBenchMiniFile() {
     auto schema = ClickBenchMiniSchema();
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
     {
@@ -165,20 +165,23 @@ std::stringstream MakeClickBenchMiniFile() {
         writer.Write(batch);
         writer.Flush();
     }
-    ss.seekg(0);
-    return ss;
+    return ss.str();
+}
+
+util::ByteView AsBytes(const std::string& s) {
+    return util::ByteView{reinterpret_cast<const uint8_t*>(s.data()), s.size()};
 }
 
 core::Batch RunMiniQuery(size_t query_id) {
-    auto ss = MakeClickBenchMiniFile();
-    auto batches = exec::ExecuteClickBenchQuery(ss, query_id);
+    auto buf = MakeClickBenchMiniFile();
+    auto batches = exec::ExecuteClickBenchQuery(AsBytes(buf), query_id);
     EXPECT_EQ(batches.size(), 1);
     return std::move(batches[0]);
 }
 
 core::Batch RunPlan(std::shared_ptr<exec::Operator> plan) {
-    auto ss = MakeClickBenchMiniFile();
-    bruh::BruhBatchReader reader(ss);
+    auto buf = MakeClickBenchMiniFile();
+    bruh::BruhBatchReader reader(AsBytes(buf));
     auto batches = exec::Execute(reader, std::move(plan));
     EXPECT_EQ(batches.size(), 1);
     return std::move(batches[0]);
@@ -194,8 +197,8 @@ size_t TotalRows(const std::vector<core::Batch>& batches) {
 }  // namespace
 
 TEST(BruhBatchReader, ReadProjectedRowGroup) {
-    auto ss = MakeClickBenchMiniFile();
-    bruh::BruhBatchReader reader(ss);
+    auto buf = MakeClickBenchMiniFile();
+    bruh::BruhBatchReader reader(AsBytes(buf));
 
     auto projected = reader.ReadRowGroup(0, std::vector<std::string>{"UserID", "SearchPhrase"});
     EXPECT_EQ(projected.ColumnsCount(), 2);
@@ -207,8 +210,8 @@ TEST(BruhBatchReader, ReadProjectedRowGroup) {
 }
 
 TEST(BruhBatchReader, ReadZeroColumnsReturnsEmptyBatch) {
-    auto ss = MakeClickBenchMiniFile();
-    bruh::BruhBatchReader reader(ss);
+    auto buf = MakeClickBenchMiniFile();
+    bruh::BruhBatchReader reader(AsBytes(buf));
 
     auto projected = reader.ReadRowGroup(0, std::vector<size_t>{});
     EXPECT_EQ(projected.ColumnsCount(), 0);
@@ -256,8 +259,8 @@ TEST(ClickBenchQueries, MinMaxEventDate) {
 }
 
 TEST(ClickBenchQueries, UnsupportedQueryThrows) {
-    auto ss = MakeClickBenchMiniFile();
-    EXPECT_THROW(exec::ExecuteClickBenchQuery(ss, 99), std::runtime_error);
+    auto buf = MakeClickBenchMiniFile();
+    EXPECT_THROW(exec::ExecuteClickBenchQuery(AsBytes(buf), 99), std::runtime_error);
 }
 
 TEST(ProjectOperator, RenameColumn) {
@@ -427,8 +430,8 @@ TEST(ClickBenchQueries, Q15CountPerUser) {
 }
 
 TEST(ClickBenchQueries, Q19EmptyMatch) {
-    auto ss = MakeClickBenchMiniFile();
-    auto batches = exec::ExecuteClickBenchQuery(ss, 19);
+    auto buf = MakeClickBenchMiniFile();
+    auto batches = exec::ExecuteClickBenchQuery(AsBytes(buf), 19);
     size_t total_rows = 0;
     for (auto& batch : batches) {
         total_rows += batch.RowsCount();
@@ -808,15 +811,16 @@ TEST(ClickBenchQueries, Q23WatchIdEventTimeUrlTitle) {
 
 TEST(ClickBenchQueries, HavingAndDateQueriesRunOnMiniData) {
     for (size_t query : {27, 28, 40, 41, 42}) {
-        auto ss = MakeClickBenchMiniFile();
-        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(ss, query)), 0u) << "query " << query;
+        auto buf = MakeClickBenchMiniFile();
+        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(AsBytes(buf), query)), 0u)
+            << "query " << query;
     }
     {
-        auto ss = MakeClickBenchMiniFile();
-        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(ss, 38)), 1u);
+        auto buf = MakeClickBenchMiniFile();
+        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(AsBytes(buf), 38)), 1u);
     }
     {
-        auto ss = MakeClickBenchMiniFile();
-        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(ss, 39)), 2u);
+        auto buf = MakeClickBenchMiniFile();
+        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(AsBytes(buf), 39)), 2u);
     }
 }

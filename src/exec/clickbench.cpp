@@ -734,8 +734,8 @@ std::shared_ptr<Operator> QueryMaker::MakeQ42() const {
                     {SortUnit{MakeColumnExpr("M", core::DataType::Timestamp), true}}, 10);
 }
 
-std::vector<core::Batch> ExecuteClickBenchQuery(std::istream& is, size_t query_id) {
-    bruh::BruhBatchReader reader(is);
+std::vector<core::Batch> ExecuteClickBenchQuery(util::ByteView data, size_t query_id) {
+    bruh::BruhBatchReader reader(data);
     auto plan = QueryMaker(reader.GetSchema()).Make(query_id);
     return Execute(reader, plan);
 }

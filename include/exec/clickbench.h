@@ -3,9 +3,9 @@
 #include <core/batch.h>
 #include <core/schema.h>
 #include <exec/operator.h>
+#include <util/byte_view.h>
 
 #include <cstddef>
-#include <istream>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -66,5 +66,5 @@ private:
     core::Schema table_schema_;
 };
 
-std::vector<core::Batch> ExecuteClickBenchQuery(std::istream& is, size_t query_id);
+std::vector<core::Batch> ExecuteClickBenchQuery(util::ByteView data, size_t query_id);
 }  // namespace columnar::exec

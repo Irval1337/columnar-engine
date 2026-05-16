@@ -4,6 +4,7 @@
 #include <bruh/bruh.h>
 #include <csv/csv.h>
 #include <util/buffered_file.h>
+#include <util/memory_mapped_file.h>
 
 #include <iostream>
 
@@ -51,8 +52,8 @@ int main(int argc, char** argv) {
             bruh::BruhBatchWriter writer(out, schema);
             Convert(reader, writer);
         } else if (mode == "bruh2csv") {
-            util::BufferedInputFile in(input);
-            bruh::BruhBatchReader reader(in);
+            util::MemoryMappedInputFile in(input);
+            bruh::BruhBatchReader reader(in.View());
             if (!schema_path.empty()) {
                 csv::SchemaManager::WriteToFile(schema_path, reader.GetSchema());
             }
