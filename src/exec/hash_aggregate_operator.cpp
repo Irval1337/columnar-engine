@@ -8,7 +8,9 @@
 #include <exec/kernel.h>
 #include <util/macro.h>
 
+#include <limits>
 #include <utility>
+#include <vector>
 
 namespace columnar::exec {
 namespace {
@@ -71,7 +73,7 @@ bool RequiresDenseBatch(const std::vector<ProjectionUnit>& keys,
 }
 }  // namespace
 
-size_t HashAggregationSink::CompositeKeyHash::operator()(const CompositeKey& key) const noexcept {
+size_t HashAggregationSink::HashCompositeKey(const CompositeKey& key) noexcept {
     size_t seed = key.size();
     for (auto& component : key) {
         std::visit(
@@ -86,6 +88,33 @@ size_t HashAggregationSink::CompositeKeyHash::operator()(const CompositeKey& key
             component);
     }
     return seed;
+}
+
+size_t HashAggregationSink::CompositeGroupHash::operator()(uint32_t group_id) const noexcept {
+    return HashCompositeKey((*keys)[group_id]);
+}
+
+size_t HashAggregationSink::CompositeGroupHash::operator()(const CompositeKey& key) const noexcept {
+    return HashCompositeKey(key);
+}
+
+bool HashAggregationSink::CompositeGroupEq::operator()(uint32_t lhs, uint32_t rhs) const noexcept {
+    return (*keys)[lhs] == (*keys)[rhs];
+}
+
+bool HashAggregationSink::CompositeGroupEq::operator()(uint32_t lhs,
+                                                       const CompositeKey& rhs) const noexcept {
+    return (*keys)[lhs] == rhs;
+}
+
+bool HashAggregationSink::CompositeGroupEq::operator()(const CompositeKey& lhs,
+                                                       uint32_t rhs) const noexcept {
+    return lhs == (*keys)[rhs];
+}
+
+bool HashAggregationSink::CompositeGroupEq::operator()(const CompositeKey& lhs,
+                                                       const CompositeKey& rhs) const noexcept {
+    return lhs == rhs;
 }
 
 size_t HashAggregationSink::Int64PairHash::operator()(const Int64Pair& key) const noexcept {
@@ -128,20 +157,190 @@ HashAggregationSink::HashAggregationSink(IOperator& downstream, std::vector<Proj
       aggregations_(std::move(aggregations)),
       output_schema_(MakeHashAggregateSchema(keys_, aggregations_)),
       mode_(SelectKeyMode(keys_)),
-      needs_dense_(RequiresDenseBatch(keys_, aggregations_)) {
+      needs_dense_(RequiresDenseBatch(keys_, aggregations_)),
+      composite_groups_(0, CompositeGroupHash{&composite_group_keys_},
+                        CompositeGroupEq{&composite_group_keys_}) {
+    agg_arrays_.reserve(aggregations_.size());
+    for (auto& unit : aggregations_) {
+        switch (unit.type) {
+            case AggregationType::Count:
+                agg_arrays_.emplace_back(CountArray{});
+                break;
+            case AggregationType::Sum: {
+                SumArray array;
+                array.is_double = GetExpressionType(*unit.expression) == core::DataType::Double;
+                agg_arrays_.emplace_back(std::move(array));
+                break;
+            }
+            case AggregationType::Avg:
+                agg_arrays_.emplace_back(AvgArray{});
+                break;
+            case AggregationType::Distinct: {
+                DistinctArray array;
+                array.is_string = GetExpressionType(*unit.expression) == core::DataType::String;
+                agg_arrays_.emplace_back(std::move(array));
+                break;
+            }
+            case AggregationType::Min:
+            case AggregationType::Max: {
+                MinMaxArray array;
+                array.value_type = GetExpressionType(*unit.expression);
+                agg_arrays_.emplace_back(std::move(array));
+                break;
+            }
+            default:
+                THROW_RUNTIME_ERROR("Unsupported aggregate type");
+        }
+    }
 }
 
-void HashAggregationSink::UpdateAggsForRow(States& states,
+uint32_t HashAggregationSink::EmplaceGroup() {
+    if (groups_count_ == std::numeric_limits<uint32_t>::max()) {
+        THROW_RUNTIME_ERROR("Too many hash aggregation groups");
+    }
+    uint32_t group_id = groups_count_++;
+    for (auto& array : agg_arrays_) {
+        std::visit([](auto& typed) { typed.PushDefault(); }, array);
+    }
+    return group_id;
+}
+
+void HashAggregationSink::UpdateAggsForRow(uint32_t group_id,
                                            const std::vector<const core::Column*>& agg_cols,
                                            size_t row) {
     for (size_t i = 0; i < aggregations_.size(); ++i) {
-        auto& unit = aggregations_[i];
-        if (unit.type == AggregationType::Count) {
-            ++std::get<CountState>(states[i]).value;
-            continue;
+        switch (aggregations_[i].type) {
+            case AggregationType::Count: {
+                ++std::get<CountArray>(agg_arrays_[i]).values[group_id];
+                break;
+            }
+            case AggregationType::Sum: {
+                const core::Column& col = *agg_cols[i];
+                if (col.IsNull(row)) {
+                    break;
+                }
+                auto& array = std::get<SumArray>(agg_arrays_[i]);
+                array.has_value[group_id] = 1;
+                if (array.is_double) {
+                    array.double_values[group_id] +=
+                        static_cast<long double>(ReadDoubleRow(col, row));
+                } else {
+                    array.int_values[group_id] += ReadIntegerRow(col, row);
+                }
+                break;
+            }
+            case AggregationType::Avg: {
+                const core::Column& col = *agg_cols[i];
+                if (col.IsNull(row)) {
+                    break;
+                }
+                auto& array = std::get<AvgArray>(agg_arrays_[i]);
+                array.int_sums[group_id] += static_cast<__int128>(ReadIntegerRow(col, row));
+                ++array.counts[group_id];
+                break;
+            }
+            case AggregationType::Distinct: {
+                const core::Column& col = *agg_cols[i];
+                if (col.IsNull(row)) {
+                    break;
+                }
+                auto& array = std::get<DistinctArray>(agg_arrays_[i]);
+                if (array.is_string) {
+                    array.strings[group_id].emplace(ReadStringRow(col, row));
+                } else {
+                    array.ints[group_id].insert(ReadIntegerRow(col, row));
+                }
+                break;
+            }
+            case AggregationType::Min:
+            case AggregationType::Max: {
+                const core::Column& col = *agg_cols[i];
+                if (col.IsNull(row)) {
+                    break;
+                }
+                auto& array = std::get<MinMaxArray>(agg_arrays_[i]);
+                bool is_min = aggregations_[i].type == AggregationType::Min;
+                uint8_t& has_value = array.has_value[group_id];
+                if (array.value_type == core::DataType::String) {
+                    auto value = ReadStringRow(col, row);
+                    auto& slot = array.string_values[group_id];
+                    if (has_value == 0 || (is_min ? value < slot : value > slot)) {
+                        slot.assign(value.data(), value.size());
+                        has_value = 1;
+                    }
+                } else if (array.value_type == core::DataType::Double) {
+                    double value = ReadDoubleRow(col, row);
+                    auto& slot = array.double_values[group_id];
+                    if (has_value == 0 || (is_min ? value < slot : value > slot)) {
+                        slot = value;
+                        has_value = 1;
+                    }
+                } else {
+                    int64_t value = ReadIntegerRow(col, row);
+                    auto& slot = array.int_values[group_id];
+                    if (has_value == 0 || (is_min ? value < slot : value > slot)) {
+                        slot = value;
+                        has_value = 1;
+                    }
+                }
+                break;
+            }
         }
-        UpdateAggregationStateRow(states[i], unit, *agg_cols[i], row);
     }
+}
+
+void HashAggregationSink::AppendAggResult(size_t agg_index, uint32_t group_id,
+                                          core::Column& out) const {
+    const AggArray& array = agg_arrays_[agg_index];
+    switch (aggregations_[agg_index].type) {
+        case AggregationType::Count:
+            AppendInteger(out, std::get<CountArray>(array).values[group_id]);
+            return;
+        case AggregationType::Sum: {
+            auto& sum = std::get<SumArray>(array);
+            if (sum.has_value[group_id] == 0) {
+                out.AppendNull();
+            } else if (sum.is_double) {
+                AppendDouble(out, static_cast<double>(sum.double_values[group_id]));
+            } else {
+                AppendInteger(out, sum.int_values[group_id]);
+            }
+            return;
+        }
+        case AggregationType::Avg: {
+            auto& avg = std::get<AvgArray>(array);
+            if (avg.counts[group_id] == 0) {
+                out.AppendNull();
+            } else {
+                AppendInteger(out,
+                              static_cast<int64_t>(avg.int_sums[group_id] /
+                                                   static_cast<__int128>(avg.counts[group_id])));
+            }
+            return;
+        }
+        case AggregationType::Distinct: {
+            auto& distinct = std::get<DistinctArray>(array);
+            size_t count = distinct.is_string ? distinct.strings[group_id].size()
+                                              : distinct.ints[group_id].size();
+            AppendInteger(out, static_cast<int64_t>(count));
+            return;
+        }
+        case AggregationType::Min:
+        case AggregationType::Max: {
+            auto& min_max = std::get<MinMaxArray>(array);
+            if (min_max.has_value[group_id] == 0) {
+                out.AppendNull();
+            } else if (min_max.value_type == core::DataType::String) {
+                out.AppendFromString(min_max.string_values[group_id]);
+            } else if (min_max.value_type == core::DataType::Double) {
+                AppendDouble(out, min_max.double_values[group_id]);
+            } else {
+                AppendInteger(out, min_max.int_values[group_id]);
+            }
+            return;
+        }
+    }
+    THROW_RUNTIME_ERROR("Unsupported aggregate type");
 }
 
 void HashAggregationSink::ConsumeInt64(const core::Column& key_col,
@@ -155,10 +354,15 @@ void HashAggregationSink::ConsumeInt64(const core::Column& key_col,
             }
             int64_t key = static_cast<int64_t>(ReadTypedValue(typed, row));
             auto it = int64_groups_.find(key);
+            uint32_t group_id;
             if (it == int64_groups_.end()) {
-                it = int64_groups_.emplace(key, MakeAggregationStates(aggregations_)).first;
+                group_id = EmplaceGroup();
+                int64_groups_.emplace(key, group_id);
+                int64_group_keys_.push_back(key);
+            } else {
+                group_id = it->second;
             }
-            UpdateAggsForRow(it->second, agg_cols, row);
+            UpdateAggsForRow(group_id, agg_cols, row);
         });
     });
 }
@@ -173,11 +377,15 @@ void HashAggregationSink::ConsumeString(const core::Column& key_col,
         }
         auto key = s.Get(row);
         auto it = string_groups_.find(key);
+        uint32_t group_id;
         if (it == string_groups_.end()) {
-            it = string_groups_.emplace(std::string(key), MakeAggregationStates(aggregations_))
-                     .first;
+            group_id = EmplaceGroup();
+            string_groups_.emplace(std::string(key), group_id);
+            string_group_keys_.emplace_back(key);
+        } else {
+            group_id = it->second;
         }
-        UpdateAggsForRow(it->second, agg_cols, row);
+        UpdateAggsForRow(group_id, agg_cols, row);
     });
 }
 
@@ -199,11 +407,15 @@ void HashAggregationSink::ConsumeInt64Pair(const core::Column& first_key_col,
                 Int64Pair key{static_cast<int64_t>(ReadTypedValue(first_typed, row)),
                               static_cast<int64_t>(ReadTypedValue(second_typed, row))};
                 auto it = int64_pair_groups_.find(key);
+                uint32_t group_id;
                 if (it == int64_pair_groups_.end()) {
-                    it =
-                        int64_pair_groups_.emplace(key, MakeAggregationStates(aggregations_)).first;
+                    group_id = EmplaceGroup();
+                    int64_pair_groups_.emplace(key, group_id);
+                    int64_pair_group_keys_.push_back(key);
+                } else {
+                    group_id = it->second;
                 }
-                UpdateAggsForRow(it->second, agg_cols, row);
+                UpdateAggsForRow(group_id, agg_cols, row);
             });
         });
     });
@@ -234,11 +446,15 @@ void HashAggregationSink::ConsumeComposite(const std::vector<const core::Column*
         }
 
         auto it = composite_groups_.find(key);
+        uint32_t group_id;
         if (it == composite_groups_.end()) {
-            it = composite_groups_.emplace(std::move(key), MakeAggregationStates(aggregations_))
-                     .first;
+            group_id = EmplaceGroup();
+            composite_group_keys_.push_back(std::move(key));
+            composite_groups_.insert(group_id);
+        } else {
+            group_id = *it;
         }
-        UpdateAggsForRow(it->second, agg_cols, row);
+        UpdateAggsForRow(group_id, agg_cols, row);
     });
 }
 
@@ -291,36 +507,34 @@ void HashAggregationSink::Consume(core::Batch batch) {
 }
 
 void HashAggregationSink::Finalize() {
-    size_t groups_count = mode_ == KeyMode::Int64       ? int64_groups_.size()
-                          : mode_ == KeyMode::String    ? string_groups_.size()
-                          : mode_ == KeyMode::Int64Pair ? int64_pair_groups_.size()
-                                                        : composite_groups_.size();
-    core::Batch out(output_schema_, groups_count);
+    core::Batch out(output_schema_, groups_count_);
 
-    auto append_aggs = [&](const States& states) {
+    auto append_aggs = [&](uint32_t group_id) {
         for (size_t i = 0; i < aggregations_.size(); ++i) {
-            AppendAggregationResult(states[i], aggregations_[i], out.ColumnAt(keys_.size() + i));
+            AppendAggResult(i, group_id, out.ColumnAt(keys_.size() + i));
         }
     };
 
     if (mode_ == KeyMode::Int64) {
-        for (auto& [key, states] : int64_groups_) {
-            AppendInteger(out.ColumnAt(0), key);
-            append_aggs(states);
+        for (uint32_t group_id = 0; group_id < groups_count_; ++group_id) {
+            AppendInteger(out.ColumnAt(0), int64_group_keys_[group_id]);
+            append_aggs(group_id);
         }
     } else if (mode_ == KeyMode::String) {
-        for (auto& [key, states] : string_groups_) {
-            static_cast<core::StringColumn&>(out.ColumnAt(0)).Append(key);
-            append_aggs(states);
+        for (uint32_t group_id = 0; group_id < groups_count_; ++group_id) {
+            static_cast<core::StringColumn&>(out.ColumnAt(0)).Append(string_group_keys_[group_id]);
+            append_aggs(group_id);
         }
     } else if (mode_ == KeyMode::Int64Pair) {
-        for (auto& [key, states] : int64_pair_groups_) {
+        for (uint32_t group_id = 0; group_id < groups_count_; ++group_id) {
+            const auto& key = int64_pair_group_keys_[group_id];
             AppendInteger(out.ColumnAt(0), key.first);
             AppendInteger(out.ColumnAt(1), key.second);
-            append_aggs(states);
+            append_aggs(group_id);
         }
     } else {
-        for (auto& [key, states] : composite_groups_) {
+        for (uint32_t group_id = 0; group_id < groups_count_; ++group_id) {
+            const auto& key = composite_group_keys_[group_id];
             for (size_t i = 0; i < keys_.size(); ++i) {
                 auto& key_out = out.ColumnAt(i);
                 std::visit(
@@ -334,7 +548,7 @@ void HashAggregationSink::Finalize() {
                     },
                     key[i]);
             }
-            append_aggs(states);
+            append_aggs(group_id);
         }
     }
 

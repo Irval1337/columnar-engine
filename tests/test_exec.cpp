@@ -387,6 +387,85 @@ TEST(HashAggregation, GroupByBoolKey) {
     }
 }
 
+TEST(HashAggregation, EmitsGroupsInFirstSeenOrder) {
+    core::Schema schema(
+        {core::Field("key", core::DataType::Int64), core::Field("value", core::DataType::Int64)});
+    core::Batch batch(schema);
+    for (auto [key, value] : std::vector<std::pair<int64_t, int64_t>>{
+             {3, 10}, {1, 20}, {2, 30}, {3, 40}}) {
+        batch.ColumnAt(0).AppendFromString(std::to_string(key));
+        batch.ColumnAt(1).AppendFromString(std::to_string(value));
+    }
+
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(), exec::MakeColumnExpr("key", core::DataType::Int64), "key",
+        {exec::Count("count"),
+         exec::Sum(exec::MakeColumnExpr("value", core::DataType::Int64), "sum")});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 3);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "3");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "2");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "50");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "1");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(1), "1");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(1), "20");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "2");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(2), "1");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(2), "30");
+}
+
+TEST(HashAggregation, SumDoubleUsesWideAccumulator) {
+    core::Schema schema(
+        {core::Field("key", core::DataType::Int64), core::Field("value", core::DataType::Double)});
+    core::Batch batch(schema);
+    for (std::string_view value : {"10000000000000000", "1", "-10000000000000000"}) {
+        batch.ColumnAt(0).AppendFromString("1");
+        batch.ColumnAt(1).AppendFromString(value);
+    }
+
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(), exec::MakeColumnExpr("key", core::DataType::Int64), "key",
+        {exec::Sum(exec::MakeColumnExpr("value", core::DataType::Double), "sum")});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 1);
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "1.000000");
+}
+
+TEST(HashAggregation, CompositeKeyMergesDuplicateGroups) {
+    struct Row {
+        int64_t user;
+        std::string_view phrase;
+        int64_t value;
+    };
+
+    core::Schema schema({core::Field("user", core::DataType::Int64),
+                         core::Field("phrase", core::DataType::String),
+                         core::Field("value", core::DataType::Int64)});
+    core::Batch batch(schema);
+    for (auto row : std::vector<Row>{{1, "alpha", 10}, {2, "beta", 5}, {1, "alpha", 7}}) {
+        batch.ColumnAt(0).AppendFromString(std::to_string(row.user));
+        batch.ColumnAt(1).AppendFromString(std::string(row.phrase));
+        batch.ColumnAt(2).AppendFromString(std::to_string(row.value));
+    }
+
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(),
+        {exec::ProjectionUnit{exec::MakeColumnExpr("user", core::DataType::Int64), "user"},
+         exec::ProjectionUnit{exec::MakeColumnExpr("phrase", core::DataType::String), "phrase"}},
+        {exec::Count("count"), exec::Sum(exec::MakeColumnExpr("value", core::DataType::Int64),
+                                         "sum")});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 2);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "1");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "alpha");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "2");
+    EXPECT_EQ(result.ColumnAt(3).GetAsString(0), "17");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "2");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(1), "beta");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(1), "1");
+    EXPECT_EQ(result.ColumnAt(3).GetAsString(1), "5");
+}
+
 TEST(HashAggregation, MixedAggregates) {
     auto plan = exec::MakeHashAggregation(
         exec::MakeScan(), exec::MakeColumnExpr("UserID", core::DataType::Int64), "UserID",
@@ -456,6 +535,26 @@ TEST(TopNOperator, MultiKeySort) {
     EXPECT_EQ(result.ColumnAt(adv).GetAsString(1), "0");
     EXPECT_EQ(result.ColumnAt(phrase).GetAsString(2), "beta");
     EXPECT_EQ(result.ColumnAt(adv).GetAsString(2), "1");
+}
+
+TEST(TopNOperator, TiesKeepInputOrder) {
+    core::Schema schema(
+        {core::Field("id", core::DataType::Int64), core::Field("score", core::DataType::Int64)});
+    core::Batch batch(schema);
+    for (auto [id, score] : std::vector<std::pair<int64_t, int64_t>>{{10, 5}, {11, 5}, {12, 5}}) {
+        batch.ColumnAt(0).AppendFromString(std::to_string(id));
+        batch.ColumnAt(1).AppendFromString(std::to_string(score));
+    }
+
+    auto id_expr = exec::MakeColumnExpr("id", core::DataType::Int64);
+    auto plan = exec::MakeTopN(
+        exec::MakeScan(),
+        {exec::SortUnit{exec::MakeBinary(exec::BinaryFunction::Minus, id_expr, id_expr), false}},
+        2);
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 2);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "10");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "11");
 }
 
 TEST(ClickBenchQueries, Q7GroupByCount) {

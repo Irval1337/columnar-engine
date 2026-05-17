@@ -138,7 +138,10 @@ void TopNSink::Finalize() {
             }
             return sort_units_[s].ascending ? cmp < 0 : cmp > 0;
         }
-        return false;
+        if (a.batch_idx != b.batch_idx) {
+            return a.batch_idx < b.batch_idx;
+        }
+        return a.row_idx < b.row_idx;
     };
 
     size_t offset = offset_.value_or(0);
