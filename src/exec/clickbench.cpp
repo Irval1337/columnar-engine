@@ -34,12 +34,16 @@ std::shared_ptr<Expression> DateConst(std::string_view date) {
     return MakeConst(static_cast<int64_t>(util::ParseDate(date)));
 }
 
-std::shared_ptr<Expression> Plus(std::shared_ptr<Expression> lhs, int64_t value) {
-    return MakeBinary(BinaryFunction::Plus, std::move(lhs), MakeConst(value));
+std::shared_ptr<Expression> Plus(std::shared_ptr<Expression> lhs, std::shared_ptr<Expression> rhs) {
+    return MakeBinary(BinaryFunction::Plus, std::move(lhs), std::move(rhs));
 }
 
 std::shared_ptr<Expression> Minus(std::shared_ptr<Expression> lhs, int64_t value) {
     return MakeBinary(BinaryFunction::Minus, std::move(lhs), MakeConst(value));
+}
+
+std::shared_ptr<Expression> Multiply(std::shared_ptr<Expression> lhs, int64_t value) {
+    return MakeBinary(BinaryFunction::Multiply, std::move(lhs), MakeConst(value));
 }
 
 std::shared_ptr<Expression> Or(std::shared_ptr<Expression> lhs, std::shared_ptr<Expression> rhs) {
@@ -495,8 +499,8 @@ std::shared_ptr<Operator> QueryMaker::MakeQ28() const {
     // SELECT REGEXP_REPLACE(Referer, '^https?://(?:www\.)?([^/]+)/.*$', '\1') AS k,
     // AVG(length(Referer)) AS l, COUNT(*) AS c, MIN(Referer) FROM hits WHERE Referer <> ''
     // GROUP BY k HAVING COUNT(*) > 100000 ORDER BY l DESC LIMIT 25;
-    auto key = MakeRegexReplace(ColumnRef(table_schema_, "Referer"),
-                                R"(^https?://(?:www\.)?([^/]+)/.*$)", R"(\1)");
+    auto key = MakePrefixCapture(ColumnRef(table_schema_, "Referer"),
+                                 {"http://www.", "https://www.", "http://", "https://"}, '/');
     auto agg = MakeHashAggregation(
         MakeFilter(MakeScan(), NotEmpty(table_schema_, "Referer")), {ProjectionUnit{key, "k"}},
         {Avg(MakeFunction(ScalarFunction::Length, ColumnRef(table_schema_, "Referer")), "l"),
@@ -511,14 +515,19 @@ std::shared_ptr<Operator> QueryMaker::MakeQ28() const {
 std::shared_ptr<Operator> QueryMaker::MakeQ29() const {
     // SELECT SUM(ResolutionWidth), SUM(ResolutionWidth + 1), ..., SUM(ResolutionWidth + 89)
     // FROM hits;
-    std::vector<AggregationUnit> aggregations;
-    aggregations.reserve(90);
-    aggregations.push_back(Sum(ColumnRef(table_schema_, "ResolutionWidth"), "sum0"));
+    auto agg = MakeGlobalAggregation(
+        MakeScan(), {Sum(ColumnRef(table_schema_, "ResolutionWidth"), "sum0"), Count("count")});
+    std::vector<ProjectionUnit> projections;
+    projections.reserve(90);
+    projections.push_back(
+        ProjectionUnit{MakeColumnExpr("sum0", core::DataType::Int64), "sum0"});
     for (int64_t shift = 1; shift < 90; ++shift) {
-        aggregations.push_back(Sum(Plus(ColumnRef(table_schema_, "ResolutionWidth"), shift),
-                                   "sum" + std::to_string(shift)));
+        projections.push_back(ProjectionUnit{
+            Plus(MakeColumnExpr("sum0", core::DataType::Int64),
+                 Multiply(MakeColumnExpr("count", core::DataType::Int64), shift)),
+            "sum" + std::to_string(shift)});
     }
-    return MakeGlobalAggregation(MakeScan(), std::move(aggregations));
+    return MakeProject(std::move(agg), std::move(projections));
 }
 
 std::shared_ptr<Operator> QueryMaker::MakeQ30() const {
@@ -571,26 +580,30 @@ std::shared_ptr<Operator> QueryMaker::MakeQ33() const {
 
 std::shared_ptr<Operator> QueryMaker::MakeQ34() const {
     // SELECT 1, URL, COUNT(*) AS c FROM hits GROUP BY 1, URL ORDER BY c DESC LIMIT 10;
-    auto agg = MakeHashAggregation(MakeScan(),
-                                   {ProjectionUnit{MakeConst(static_cast<int64_t>(1)), "1"},
-                                    ProjectionUnit{ColumnRef(table_schema_, "URL"), "URL"}},
+    auto agg = MakeHashAggregation(MakeScan(), ColumnRef(table_schema_, "URL"), "URL",
                                    {Count("c")});
-    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
-                    10);
+    auto top = MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
+                        10);
+    return MakeProject(std::move(top),
+                       {ProjectionUnit{MakeConst(static_cast<int64_t>(1)), "1"},
+                        ProjectionUnit{MakeColumnExpr("URL", core::DataType::String), "URL"},
+                        ProjectionUnit{MakeColumnExpr("c", core::DataType::Int64), "c"}});
 }
 
 std::shared_ptr<Operator> QueryMaker::MakeQ35() const {
     // SELECT ClientIP, ClientIP - 1, ClientIP - 2, ClientIP - 3, COUNT(*) AS c FROM hits
     // GROUP BY ClientIP, ClientIP - 1, ClientIP - 2, ClientIP - 3 ORDER BY c DESC LIMIT 10;
-    auto agg = MakeHashAggregation(
-        MakeScan(),
-        {ProjectionUnit{ColumnRef(table_schema_, "ClientIP"), "ClientIP"},
-         ProjectionUnit{Minus(ColumnRef(table_schema_, "ClientIP"), 1), "ClientIP_1"},
-         ProjectionUnit{Minus(ColumnRef(table_schema_, "ClientIP"), 2), "ClientIP_2"},
-         ProjectionUnit{Minus(ColumnRef(table_schema_, "ClientIP"), 3), "ClientIP_3"}},
-        {Count("c")});
-    return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
-                    10);
+    auto agg = MakeHashAggregation(MakeScan(), ColumnRef(table_schema_, "ClientIP"), "ClientIP",
+                                   {Count("c")});
+    auto top = MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
+                        10);
+    auto client_ip = MakeColumnExpr("ClientIP", core::DataType::Int64);
+    return MakeProject(
+        std::move(top),
+        {ProjectionUnit{client_ip, "ClientIP"}, ProjectionUnit{Minus(client_ip, 1), "ClientIP_1"},
+         ProjectionUnit{Minus(client_ip, 2), "ClientIP_2"},
+         ProjectionUnit{Minus(client_ip, 3), "ClientIP_3"},
+         ProjectionUnit{MakeColumnExpr("c", core::DataType::Int64), "c"}});
 }
 
 std::shared_ptr<Operator> QueryMaker::MakeQ36() const {

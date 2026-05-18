@@ -3,11 +3,11 @@
 #include <core/batch.h>
 #include <core/column.h>
 #include <core/datatype.h>
+#include <re2/re2.h>
 
-#include <cctype>
 #include <cstdint>
 #include <memory>
-#include <regex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,6 +23,7 @@ enum class ExpressionType {
     Function,
     Case,
     RegexReplace,
+    PrefixCapture,
 };
 
 struct Expression {
@@ -69,10 +70,12 @@ enum class BinaryFunction {
     GreaterOrEqual,
     Plus,
     Minus,
+    Multiply,
 };
 
 inline bool IsArithmeticFunction(BinaryFunction function) {
-    return function == BinaryFunction::Plus || function == BinaryFunction::Minus;
+    return function == BinaryFunction::Plus || function == BinaryFunction::Minus ||
+           function == BinaryFunction::Multiply;
 }
 
 struct BinaryExpr final : public Expression {
@@ -155,13 +158,44 @@ struct RegexReplaceExpr final : public Expression {
                      std::string replacement)
         : Expression(ExpressionType::RegexReplace),
           arg(std::move(a)),
-          regex(pattern, std::regex::ECMAScript),
+          regex(pattern),
           replacement(std::move(replacement)) {
+        if (!regex.ok()) {
+            throw std::runtime_error("Invalid regex pattern: " + regex.error());
+        }
+        std::string rewrite_error;
+        if (!regex.CheckRewriteString(this->replacement, &rewrite_error)) {
+            throw std::runtime_error("Invalid regex replacement: " + rewrite_error);
+        }
     }
 
     std::shared_ptr<Expression> arg;
-    std::regex regex;
+    RE2 regex;
     std::string replacement;
+};
+
+struct PrefixCaptureExpr final : public Expression {
+    PrefixCaptureExpr(std::shared_ptr<Expression> a, std::vector<std::string> p, char d,
+                      bool require_non_empty = true, bool single_line_tail = true)
+        : Expression(ExpressionType::PrefixCapture),
+          arg(std::move(a)),
+          prefixes(std::move(p)),
+          delimiter(d),
+          require_non_empty(require_non_empty),
+          single_line_tail(single_line_tail) {
+        if (prefixes.empty()) {
+            throw std::runtime_error("PrefixCapture requires at least one prefix");
+        }
+        if (delimiter == '\0') {
+            throw std::runtime_error("PrefixCapture delimiter must not be NUL");
+        }
+    }
+
+    std::shared_ptr<Expression> arg;
+    std::vector<std::string> prefixes;
+    char delimiter = '\0';
+    bool require_non_empty = true;
+    bool single_line_tail = true;
 };
 
 inline std::shared_ptr<FunctionExpr> MakeFunction(ScalarFunction function,
@@ -178,21 +212,16 @@ inline std::shared_ptr<CaseExpr> MakeCase(std::shared_ptr<Expression> cond,
 inline std::shared_ptr<RegexReplaceExpr> MakeRegexReplace(std::shared_ptr<Expression> arg,
                                                           const std::string& pattern,
                                                           const std::string& replacement) {
-    std::string translated;
-    translated.reserve(replacement.size());
-    for (size_t i = 0; i < replacement.size(); ++i) {
-        char c = replacement[i];
-        if (c == '\\' && i + 1 < replacement.size() &&
-            std::isdigit(static_cast<unsigned char>(replacement[i + 1])) != 0) {
-            translated += '$';
-            translated += replacement[++i];
-        } else if (c == '$') {
-            translated += "$$";
-        } else {
-            translated += c;
-        }
-    }
-    return std::make_shared<RegexReplaceExpr>(std::move(arg), pattern, std::move(translated));
+    return std::make_shared<RegexReplaceExpr>(std::move(arg), pattern, replacement);
+}
+
+inline std::shared_ptr<PrefixCaptureExpr> MakePrefixCapture(std::shared_ptr<Expression> arg,
+                                                            std::vector<std::string> prefixes,
+                                                            char delimiter,
+                                                            bool require_non_empty = true,
+                                                            bool single_line_tail = true) {
+    return std::make_shared<PrefixCaptureExpr>(std::move(arg), std::move(prefixes), delimiter,
+                                               require_non_empty, single_line_tail);
 }
 
 class EvalResult {
@@ -228,4 +257,6 @@ bool IsTrivialExpression(const Expression& expr);
 void CollectColumns(const Expression& expr, std::vector<std::string>& columns);
 
 EvalResult Evaluate(const core::Batch& batch, const Expression& expr);
+
+std::vector<uint32_t> EvaluatePredicateSelection(const core::Batch& batch, const Expression& expr);
 }  // namespace columnar::exec

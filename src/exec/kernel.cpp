@@ -10,7 +10,6 @@
 #include <exec/column_helpers.h>
 #include <util/macro.h>
 
-#include <regex>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -183,8 +182,10 @@ std::unique_ptr<core::Column> CompareDispatch(const core::Column& lhs, const cor
     return CompareIntegers(lhs, rhs, cmp);
 }
 
+enum class ArithmeticOp { Add, Subtract, Multiply };
+
 std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core::Column& rhs,
-                                            bool subtract) {
+                                            ArithmeticOp op) {
     size_t rows = lhs.Size();
     if (rhs.Size() != rows) {
         THROW_RUNTIME_ERROR("Arithmetic: row count mismatch");
@@ -197,15 +198,15 @@ std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core:
             const util::BitVector* lmask = l.IsNullable() ? &l.GetNullMask() : nullptr;
             const util::BitVector* rmask = r.IsNullable() ? &r.GetNullMask() : nullptr;
             if (lmask == nullptr && rmask == nullptr) {
-                if (subtract) {
-                    for (size_t i = 0; i < rows; ++i) {
-                        data[i] = static_cast<int64_t>(ReadTypedValue(l, i)) -
-                                  static_cast<int64_t>(ReadTypedValue(r, i));
-                    }
-                } else {
-                    for (size_t i = 0; i < rows; ++i) {
-                        data[i] = static_cast<int64_t>(ReadTypedValue(l, i)) +
-                                  static_cast<int64_t>(ReadTypedValue(r, i));
+                for (size_t i = 0; i < rows; ++i) {
+                    auto a = static_cast<int64_t>(ReadTypedValue(l, i));
+                    auto b = static_cast<int64_t>(ReadTypedValue(r, i));
+                    if (op == ArithmeticOp::Add) {
+                        data[i] = a + b;
+                    } else if (op == ArithmeticOp::Subtract) {
+                        data[i] = a - b;
+                    } else {
+                        data[i] = a * b;
                     }
                 }
                 return;
@@ -217,7 +218,13 @@ std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core:
                 }
                 auto a = static_cast<int64_t>(ReadTypedValue(l, i));
                 auto b = static_cast<int64_t>(ReadTypedValue(r, i));
-                data[i] = subtract ? a - b : a + b;
+                if (op == ArithmeticOp::Add) {
+                    data[i] = a + b;
+                } else if (op == ArithmeticOp::Subtract) {
+                    data[i] = a - b;
+                } else {
+                    data[i] = a * b;
+                }
             }
         });
     });
@@ -262,6 +269,30 @@ std::unique_ptr<core::Column> CompareStringConst(const core::Column& col, std::s
         out->Append(!s.IsNull(i) && cmp(s.Get(i), value));
     }
     return out;
+}
+
+std::string_view ApplyPrefixCapture(std::string_view value,
+                                    const std::vector<std::string>& prefixes,
+                                    char delimiter,
+                                    bool require_non_empty,
+                                    bool single_line_tail) {
+    for (const auto& prefix : prefixes) {
+        if (!value.starts_with(prefix)) {
+            continue;
+        }
+        size_t capture_begin = prefix.size();
+        size_t capture_end = value.find(delimiter, capture_begin);
+        if (capture_end == std::string_view::npos ||
+            (require_non_empty && capture_end == capture_begin)) {
+            continue;
+        }
+        if (single_line_tail &&
+            value.find('\n', capture_end + 1) != std::string_view::npos) {
+            continue;
+        }
+        return value.substr(capture_begin, capture_end - capture_begin);
+    }
+    return value;
 }
 }  // namespace
 
@@ -422,11 +453,15 @@ std::unique_ptr<core::Column> Or(const core::Column& lhs, const core::Column& rh
 }
 
 std::unique_ptr<core::Column> Add(const core::Column& lhs, const core::Column& rhs) {
-    return ArithmeticInt(lhs, rhs, false);
+    return ArithmeticInt(lhs, rhs, ArithmeticOp::Add);
 }
 
 std::unique_ptr<core::Column> Subtract(const core::Column& lhs, const core::Column& rhs) {
-    return ArithmeticInt(lhs, rhs, true);
+    return ArithmeticInt(lhs, rhs, ArithmeticOp::Subtract);
+}
+
+std::unique_ptr<core::Column> Multiply(const core::Column& lhs, const core::Column& rhs) {
+    return ArithmeticInt(lhs, rhs, ArithmeticOp::Multiply);
 }
 
 std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::string_view substring,
@@ -500,7 +535,7 @@ std::unique_ptr<core::Column> TruncMinute(const core::Column& operand) {
                         [](int64_t seconds) { return seconds - seconds % 60; });
 }
 
-std::unique_ptr<core::Column> RegexReplace(const core::Column& operand, const std::regex& regex,
+std::unique_ptr<core::Column> RegexReplace(const core::Column& operand, const RE2& regex,
                                            const std::string& replacement) {
     if (operand.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("REGEXP_REPLACE operand must be a string column");
@@ -508,13 +543,40 @@ std::unique_ptr<core::Column> RegexReplace(const core::Column& operand, const st
     auto& s = static_cast<const core::StringColumn&>(operand);
     size_t rows = s.Size();
     auto out = std::make_unique<core::StringColumn>(s.IsNullable());
+    out->Reserve(rows);
     for (size_t i = 0; i < rows; ++i) {
         if (s.IsNull(i)) {
             out->AppendNull();
             continue;
         }
         auto value = s.Get(i);
-        out->Append(std::regex_replace(std::string(value), regex, replacement));
+        std::string replaced(value);
+        RE2::GlobalReplace(&replaced, regex, replacement);
+        out->Append(replaced);
+    }
+    return out;
+}
+
+std::unique_ptr<core::Column> PrefixCapture(const core::Column& operand,
+                                            const std::vector<std::string>& prefixes,
+                                            char delimiter,
+                                            bool require_non_empty,
+                                            bool single_line_tail) {
+    if (operand.GetDataType() != core::DataType::String) {
+        THROW_RUNTIME_ERROR("PrefixCapture operand must be a string column");
+    }
+    auto& s = static_cast<const core::StringColumn&>(operand);
+    size_t rows = s.Size();
+    auto out = std::make_unique<core::StringColumn>(s.IsNullable());
+    out->Reserve(rows);
+    for (size_t i = 0; i < rows; ++i) {
+        if (s.IsNull(i)) {
+            out->AppendNull();
+            continue;
+        }
+        auto value = s.Get(i);
+        out->Append(ApplyPrefixCapture(value, prefixes, delimiter,
+                                       require_non_empty, single_line_tail));
     }
     return out;
 }

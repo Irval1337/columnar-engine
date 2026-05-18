@@ -3,11 +3,11 @@
 #include <core/batch.h>
 #include <core/column.h>
 #include <core/columns/bool_column.h>
+#include <re2/re2.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <regex>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -45,14 +45,20 @@ std::unique_ptr<core::Column> Or(const core::Column& lhs, const core::Column& rh
 
 std::unique_ptr<core::Column> Add(const core::Column& lhs, const core::Column& rhs);
 std::unique_ptr<core::Column> Subtract(const core::Column& lhs, const core::Column& rhs);
+std::unique_ptr<core::Column> Multiply(const core::Column& lhs, const core::Column& rhs);
 
 std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::string_view substring,
                                           bool negated);
 std::unique_ptr<core::Column> StrLength(const core::Column& operand);
 std::unique_ptr<core::Column> ExtractMinute(const core::Column& operand);
 std::unique_ptr<core::Column> TruncMinute(const core::Column& operand);
-std::unique_ptr<core::Column> RegexReplace(const core::Column& operand, const std::regex& regex,
+std::unique_ptr<core::Column> RegexReplace(const core::Column& operand, const RE2& regex,
                                            const std::string& replacement);
+std::unique_ptr<core::Column> PrefixCapture(const core::Column& operand,
+                                            const std::vector<std::string>& prefixes,
+                                            char delimiter,
+                                            bool require_non_empty = true,
+                                            bool single_line_tail = true);
 
 std::unique_ptr<core::Column> CaseSelect(const core::BoolColumn& mask,
                                          const core::Column& when_true,

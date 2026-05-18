@@ -241,6 +241,29 @@ TEST(ClickBenchQueries, FilteredCount) {
     EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "2");
 }
 
+TEST(FilterOperator, FusedAndInAndContains) {
+    auto traffic = exec::MakeColumnExpr("TraficSourceID", core::DataType::Int64);
+    auto in_traffic = exec::MakeBinary(
+        exec::BinaryFunction::Or,
+        exec::MakeBinary(exec::BinaryFunction::Equal, traffic, exec::MakeConst(int64_t{-1})),
+        exec::MakeBinary(exec::BinaryFunction::Equal, traffic, exec::MakeConst(int64_t{6})));
+    auto condition = exec::MakeBinary(
+        exec::BinaryFunction::And,
+        exec::MakeBinary(
+            exec::BinaryFunction::And,
+            exec::MakeBinary(exec::BinaryFunction::Equal,
+                             exec::MakeColumnExpr("CounterID", core::DataType::Int64),
+                             exec::MakeConst(int64_t{62})),
+            std::move(in_traffic)),
+        exec::MakeContains(exec::MakeColumnExpr("URL", core::DataType::String), "google"));
+    auto plan = exec::MakeProject(
+        exec::MakeFilter(exec::MakeScan(), std::move(condition)),
+        {exec::ProjectionUnit{exec::MakeColumnExpr("URL", core::DataType::String), "URL"}});
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.RowsCount(), 1);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "google.com");
+}
+
 TEST(ClickBenchQueries, SumCountAvg) {
     auto result = RunMiniQuery(2);
     EXPECT_EQ(result.ColumnsCount(), 3);
@@ -913,17 +936,49 @@ TEST(Expression, CaseWhen) {
 }
 
 TEST(Expression, RegexReplaceExtractsHost) {
+    core::Schema schema({core::Field("URL", core::DataType::String)});
+    core::Batch batch(schema);
+    batch.ColumnAt(0).AppendFromString("example.com");
+    batch.ColumnAt(0).AppendFromString("https://www.google.org/path");
+    batch.ColumnAt(0).AppendFromString("http://state=19945206/a\nb");
+    batch.ColumnAt(0).AppendFromString("http://state=19945206/a\rb");
+
     auto plan = exec::MakeProject(
         exec::MakeScan(),
         {exec::ProjectionUnit{
             exec::MakeRegexReplace(exec::MakeColumnExpr("URL", core::DataType::String),
                                    R"(^https?://(?:www\.)?([^/]+)/.*$)", R"(\1)"),
             "host"}});
-    auto result = RunPlan(plan);
-    ASSERT_EQ(result.RowsCount(), 3);
-    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "example.com");  // no scheme: unchanged
-    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "google.com");   // no scheme: unchanged
-    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "google.org");   // host extracted
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 4);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "example.com");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "google.org");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "http://state=19945206/a\nb");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(3), "state=19945206");
+}
+
+TEST(Expression, PrefixCaptureHandlesGenericPrefixes) {
+    core::Schema schema({core::Field("Value", core::DataType::String)});
+    core::Batch batch(schema);
+    batch.ColumnAt(0).AppendFromString("prefix-alpha|tail");
+    batch.ColumnAt(0).AppendFromString("prefix-v2-beta|tail");
+    batch.ColumnAt(0).AppendFromString("prefix-|tail");
+    batch.ColumnAt(0).AppendFromString("prefix-alpha|tail\nmore");
+    batch.ColumnAt(0).AppendFromString("other-alpha|tail");
+
+    auto plan = exec::MakeProject(
+        exec::MakeScan(),
+        {exec::ProjectionUnit{
+            exec::MakePrefixCapture(exec::MakeColumnExpr("Value", core::DataType::String),
+                                    {"prefix-v2-", "prefix-"}, '|'),
+            "extracted"}});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 5);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "alpha");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "beta");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "prefix-|tail");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(3), "prefix-alpha|tail\nmore");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(4), "other-alpha|tail");
 }
 
 TEST(Kernel, TimestampAndLengthFunctions) {
