@@ -10,10 +10,10 @@
 #include <util/bit_vector.h>
 #include <util/byte_buffer.h>
 #include <util/compression.h>
-#include <util/stream_helper.h>
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <type_traits>
 #include <vector>
 
@@ -164,6 +164,17 @@ std::unique_ptr<core::Column> DecodeChar(util::BufReader& r, bool nullable, core
     }
 }
 
+void CheckMappedRange(uint64_t offset, uint64_t size, size_t mapped_size) {
+    if (offset > std::numeric_limits<size_t>::max() || size > std::numeric_limits<size_t>::max()) {
+        THROW_RUNTIME_ERROR("Mapped chunk range is too large");
+    }
+    auto begin = static_cast<size_t>(offset);
+    auto len = static_cast<size_t>(size);
+    if (begin > mapped_size || len > mapped_size - begin) {
+        THROW_RUNTIME_ERROR("Mapped chunk range is out of file bounds");
+    }
+}
+
 }  // namespace
 
 core::Batch BruhBatchReader::ReadRowGroup(size_t i) {
@@ -190,20 +201,21 @@ core::Batch BruhBatchReader::ReadRowGroup(size_t i, const std::vector<size_t>& c
             THROW_RUNTIME_ERROR("Column index out of range");
         }
         auto& chunk = group.columns[col];
-        if (is_.tellg() != static_cast<std::streamoff>(chunk.offset)) {
-            is_.seekg(chunk.offset);
-        }
-        encode_buf_.resize(chunk.uncompressed_size);
+        uint64_t mapped_size = chunk.compression == util::Compression::None
+                                   ? chunk.uncompressed_size
+                                   : chunk.compressed_size;
+        CheckMappedRange(chunk.offset, mapped_size, data_.size());
+        const uint8_t* chunk_data = data_.data() + static_cast<size_t>(chunk.offset);
         if (chunk.compression == util::Compression::None) {
-            util::ReadRaw(is_, encode_buf_.data(), chunk.uncompressed_size);
+            util::BufReader r(chunk_data, static_cast<size_t>(chunk.uncompressed_size));
+            ReadColumn(r, columns[out_col], schema.GetFields()[col], chunk);
         } else {
-            compress_buf_.resize(chunk.compressed_size);
-            util::ReadRaw(is_, compress_buf_.data(), chunk.compressed_size);
-            util::Decompress(chunk.compression, compress_buf_.data(), chunk.compressed_size,
+            encode_buf_.resize(chunk.uncompressed_size);
+            util::Decompress(chunk.compression, chunk_data, chunk.compressed_size,
                              encode_buf_.data(), chunk.uncompressed_size);
+            util::BufReader r(encode_buf_.data(), encode_buf_.size());
+            ReadColumn(r, columns[out_col], schema.GetFields()[col], chunk);
         }
-        util::BufReader r(encode_buf_.data(), encode_buf_.size());
-        ReadColumn(r, columns[out_col], schema.GetFields()[col], chunk);
     }
     return batch;
 }
@@ -233,56 +245,66 @@ core::Schema BruhBatchReader::ProjectSchema(const std::vector<size_t>& column_in
 
 void BruhBatchReader::ReadMetaData() {
     EnsureBruhFormat();
-    uint32_t cols_count = util::Read<uint32_t>(is_);
-    ReadSchema(cols_count);
-    ReadRowGroupsMetadata(cols_count);
-}
-
-void BruhBatchReader::EnsureBruhFormat() {
-    is_.seekg(-(sizeof(kMagicBytes) + 4), std::ios::end);
-    auto meta_size = util::Read<uint32_t>(is_);
-    auto magic_bruh = util::ReadArray<uint8_t>(is_, sizeof(kMagicBytes));
-    if (std::memcmp(magic_bruh.data(), kMagicBytes, sizeof(kMagicBytes)) != 0) {
-        THROW_RUNTIME_ERROR("Bad magic bytes");
+    size_t footer_size = sizeof(kMagicBytes) + 4;
+    CheckMappedRange(data_.size() - footer_size, footer_size, data_.size());
+    util::BufReader tail(data_.data() + data_.size() - footer_size, footer_size);
+    uint32_t meta_size = tail.Read<uint32_t>();
+    if (meta_size > data_.size() - footer_size) {
+        THROW_RUNTIME_ERROR("Footer metadata is out of file bounds");
     }
-    is_.seekg(-(sizeof(kMagicBytes) + meta_size + 4), std::ios::end);
-
-    metadata_.version = util::Read<int>(is_);
+    size_t meta_offset = data_.size() - footer_size - meta_size;
+    CheckMappedRange(meta_offset, meta_size, data_.size());
+    util::BufReader r(data_.data() + meta_offset, meta_size);
+    metadata_.version = r.Read<int>();
     if (metadata_.version != kCurrentVersion) {
         THROW_RUNTIME_ERROR("File version mismatch");
     }
+    uint32_t cols_count = r.Read<uint32_t>();
+    ReadSchema(r, cols_count);
+    ReadRowGroupsMetadata(r, cols_count);
 }
 
-void BruhBatchReader::ReadSchema(uint32_t cols_count) {
+void BruhBatchReader::EnsureBruhFormat() {
+    size_t footer_size = sizeof(kMagicBytes) + 4;
+    if (data_.size() < footer_size) {
+        THROW_RUNTIME_ERROR("File is too small");
+    }
+    if (std::memcmp(data_.data() + data_.size() - sizeof(kMagicBytes), kMagicBytes,
+                    sizeof(kMagicBytes)) != 0) {
+        THROW_RUNTIME_ERROR("Bad magic bytes");
+    }
+}
+
+void BruhBatchReader::ReadSchema(util::BufReader& r, uint32_t cols_count) {
     std::vector<core::Field> fields;
     fields.reserve(cols_count);
     for (uint32_t i = 0; i < cols_count; ++i) {
-        auto name_len = util::Read<uint32_t>(is_);
-        auto name = util::ReadString(is_, name_len);
-        auto type = static_cast<core::DataType>(util::Read<uint8_t>(is_));
-        auto nullable = util::Read<uint8_t>(is_) != 0;
+        auto name_len = r.Read<uint32_t>();
+        auto name = r.ReadString(name_len);
+        auto type = static_cast<core::DataType>(r.Read<uint8_t>());
+        auto nullable = r.Read<uint8_t>() != 0;
         fields.emplace_back(name, type, nullable);
     }
     metadata_.schema = core::Schema(std::move(fields));
 }
 
-void BruhBatchReader::ReadRowGroupsMetadata(uint32_t cols_count) {
-    metadata_.rows_count = util::Read<uint64_t>(is_);
-    auto groups_count = util::Read<uint32_t>(is_);
+void BruhBatchReader::ReadRowGroupsMetadata(util::BufReader& r, uint32_t cols_count) {
+    metadata_.rows_count = r.Read<uint64_t>();
+    auto groups_count = r.Read<uint32_t>();
     metadata_.row_groups.reserve(groups_count);
     for (uint32_t i = 0; i < groups_count; ++i) {
         RowGroupMetaData group;
-        group.rows_count = util::Read<uint64_t>(is_);
-        group.byte_size = util::Read<uint64_t>(is_);
+        group.rows_count = r.Read<uint64_t>();
+        group.byte_size = r.Read<uint64_t>();
         group.columns.reserve(cols_count);
         for (uint32_t c = 0; c < cols_count; ++c) {
             ColumnChunkMetaData chunk;
-            chunk.offset = util::Read<uint64_t>(is_);
-            chunk.compressed_size = util::Read<uint64_t>(is_);
-            chunk.uncompressed_size = util::Read<uint64_t>(is_);
-            chunk.values_count = util::Read<uint64_t>(is_);
-            chunk.encoding = static_cast<core::Encoding>(util::Read<uint8_t>(is_));
-            chunk.compression = static_cast<util::Compression>(util::Read<uint8_t>(is_));
+            chunk.offset = r.Read<uint64_t>();
+            chunk.compressed_size = r.Read<uint64_t>();
+            chunk.uncompressed_size = r.Read<uint64_t>();
+            chunk.values_count = r.Read<uint64_t>();
+            chunk.encoding = static_cast<core::Encoding>(r.Read<uint8_t>());
+            chunk.compression = static_cast<util::Compression>(r.Read<uint8_t>());
             group.columns.emplace_back(std::move(chunk));
         }
         metadata_.row_groups.emplace_back(std::move(group));

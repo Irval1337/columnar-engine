@@ -20,5 +20,6 @@ private:
     core::Schema output_schema_;
     std::vector<AggregationUnit> aggregations_;
     std::vector<AggregationState> states_;
+    bool needs_dense_;
 };
 }  // namespace columnar::exec

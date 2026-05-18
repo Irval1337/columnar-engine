@@ -47,8 +47,9 @@ TEST_P(BruhCompressionRoundTrip, Int64) {
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
     WriteIntColumn(ss, schema, values, param.encoding, param.compression);
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto batch = reader.ReadRowGroup(0);
     ASSERT_EQ(batch.RowsCount(), values.size());
     for (size_t i = 0; i < values.size(); ++i) {
@@ -96,8 +97,9 @@ TEST(BruhCompression, StringDictionaryWithLz4RoundTrip) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto batch = reader.ReadRowGroup(0);
     ASSERT_EQ(batch.RowsCount(), values.size());
     for (size_t i = 0; i < values.size(); ++i) {
@@ -123,8 +125,9 @@ TEST(BruhCompression, RepetitiveDataIsActuallySmaller) {
         }
         writer.Write(batch);
         writer.Flush();
-        ss.seekg(0);
-        bruh::BruhBatchReader reader(ss);
+        auto buf = ss.str();
+        bruh::BruhBatchReader reader(
+            util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
         return reader.GetMetaData().row_groups[0].columns[0].compressed_size;
     };
 
@@ -157,8 +160,9 @@ TEST(BruhCompression, AutoCompressionUsesOptionWhenUseful) {
         writer.Write(batch);
         writer.Flush();
     }
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     EXPECT_EQ(reader.GetMetaData().row_groups[0].columns[0].compression, util::Compression::Zstd);
 }
 
@@ -180,8 +184,9 @@ TEST(BruhCompression, AutoCompressionSkipsBiggerResult) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto& chunk = reader.GetMetaData().row_groups[0].columns[0];
     EXPECT_EQ(chunk.compression, util::Compression::None);
     EXPECT_EQ(chunk.compressed_size, chunk.uncompressed_size);
@@ -206,8 +211,9 @@ TEST(BruhCompression, PerColumnOverridesGlobal) {
         writer.Write(batch);
         writer.Flush();
     }
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto& cols = reader.GetMetaData().row_groups[0].columns;
     EXPECT_EQ(cols[0].compression, util::Compression::Lz4);
     EXPECT_EQ(cols[1].compression, util::Compression::None);

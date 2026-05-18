@@ -4,11 +4,19 @@
 #include <exec/filter_operator.h>
 #include <exec/global_aggregate_operator.h>
 #include <exec/hash_aggregate_operator.h>
+#include <exec/kernel.h>
 #include <exec/project_operator.h>
 #include <exec/topn_operator.h>
 #include <util/macro.h>
 
 namespace columnar::exec {
+void CollectSink::Consume(core::Batch batch) {
+    if (batch.HasSelection()) {
+        batch = kernel::Materialize(batch);
+    }
+    batches_.push_back(std::move(batch));
+}
+
 namespace {
 template <typename T>
 const T& As(const std::shared_ptr<Operator>& op) {

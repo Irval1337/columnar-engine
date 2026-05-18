@@ -20,5 +20,6 @@ public:
 private:
     IOperator& downstream_;
     std::vector<ProjectionUnit> projections_;
+    bool needs_dense_;
 };
 }  // namespace columnar::exec

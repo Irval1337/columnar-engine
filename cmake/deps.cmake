@@ -29,6 +29,18 @@ FetchContent_Declare(
 set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(absl)
 
+set(RE2_TEST OFF CACHE BOOL "" FORCE)
+set(RE2_BENCHMARK OFF CACHE BOOL "" FORCE)
+set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(RE2_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  re2
+  GIT_REPOSITORY https://github.com/google/re2.git
+  GIT_TAG 2025-11-05
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(re2)
+
 set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
 set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
 FetchContent_Declare(

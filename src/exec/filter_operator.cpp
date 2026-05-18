@@ -1,32 +1,23 @@
 #include <exec/filter_operator.h>
 
-#include <core/columns/bool_column.h>
 #include <exec/expression.h>
-#include <exec/kernel.h>
-#include <util/macro.h>
 
 namespace columnar::exec {
 void FilterSink::Consume(core::Batch batch) {
-    size_t rows = batch.RowsCount();
-    if (rows == 0) {
+    if (batch.RowsCount() == 0) {
         return;
     }
-
-    auto result = Evaluate(batch, *condition_);
-    if (result.Get().GetDataType() != core::DataType::Bool) {
-        THROW_RUNTIME_ERROR("Filter condition must produce a boolean column");
-    }
-    auto& mask = static_cast<const core::BoolColumn&>(result.Get());
-
-    size_t selected = mask.GetData().PopCount();
+    auto selection = EvaluatePredicateSelection(batch, *condition_);
+    size_t selected = selection.size();
     if (selected == 0) {
         return;
     }
-    if (selected == rows) {
+    if (!batch.HasSelection() && selected == batch.RowsCount()) {
         downstream_.Consume(std::move(batch));
         return;
     }
 
-    downstream_.Consume(kernel::ApplyFilter(batch, mask));
+    batch.SetSelection(std::move(selection));
+    downstream_.Consume(std::move(batch));
 }
 }  // namespace columnar::exec

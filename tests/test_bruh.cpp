@@ -49,8 +49,9 @@ TEST(BruhBatchReader, ReadBasic) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     EXPECT_EQ(reader.NumRowGroups(), 1);
 
     auto& read_schema = reader.GetSchema();
@@ -80,8 +81,9 @@ TEST(BruhBatchReader, MultipleRowGroups) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     EXPECT_EQ(reader.NumRowGroups(), 3);
 
     for (size_t group = 0; group < 3; ++group) {
@@ -105,8 +107,9 @@ TEST(BruhBatchReader, ReadNext) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     int count = 0;
     while (auto batch = reader.ReadNext()) {
         EXPECT_EQ(batch->RowsCount(), 1);
@@ -129,8 +132,9 @@ TEST(BruhBatchReader, NullableColumn) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto batch = reader.ReadRowGroup(0);
 
     EXPECT_EQ(batch.RowsCount(), 3);
@@ -157,8 +161,9 @@ TEST(BruhBatchReader, AllDataTypes) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto batch = reader.ReadRowGroup(0);
 
     EXPECT_EQ(batch.ColumnAt(0).GetAsString(0), "42");
@@ -185,8 +190,9 @@ TEST(BruhBatchReader, LogicalAndCharTypes) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto& read_schema = reader.GetSchema();
     EXPECT_EQ(read_schema.GetFields()[0].type, core::DataType::Date);
     EXPECT_EQ(read_schema.GetFields()[1].type, core::DataType::Timestamp);
@@ -212,8 +218,9 @@ TEST(BruhBatchWriter, EmptyBatch) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto batch = reader.ReadRowGroup(0);
     EXPECT_EQ(batch.RowsCount(), 0);
 }
@@ -234,8 +241,9 @@ TEST(BruhBatchWriter, LargeBatch) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto batch = reader.ReadRowGroup(0);
     EXPECT_EQ(batch.RowsCount(), size);
     EXPECT_EQ(batch.ColumnAt(0).GetAsString(0), "0");
@@ -259,8 +267,9 @@ TEST(BruhBatchWriter, SpecialCharacters) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto batch = reader.ReadRowGroup(0);
     EXPECT_EQ(batch.RowsCount(), test_strings.size());
     for (size_t i = 0; i < test_strings.size(); ++i) {
@@ -281,8 +290,9 @@ TEST(BruhBatchReader, AllNullColumn) {
         writer.Flush();
     }
 
-    ss.seekg(0);
-    bruh::BruhBatchReader reader(ss);
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto batch = reader.ReadRowGroup(0);
     EXPECT_EQ(batch.RowsCount(), 5);
     for (size_t i = 0; i < 5; ++i) {
@@ -308,10 +318,11 @@ TEST(BruhFullInterface, CsvAndBruh) {
         bruh_writer.Flush();
     }
 
-    bruh_ss.seekg(0);
+    auto buf = bruh_ss.str();
     std::ostringstream csv_out;
     {
-        bruh::BruhBatchReader bruh_reader(bruh_ss);
+        bruh::BruhBatchReader bruh_reader(
+            util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
         csv::CSVBatchWriter csv_writer(csv_out, {});
 
         while (auto batch = bruh_reader.ReadNext()) {
@@ -340,10 +351,11 @@ TEST(BruhFullInterface, NullCsvAndBruh) {
         bruh_writer.Flush();
     }
 
-    bruh_ss.seekg(0);
+    auto buf = bruh_ss.str();
     std::ostringstream csv_out;
     {
-        bruh::BruhBatchReader bruh_reader(bruh_ss);
+        bruh::BruhBatchReader bruh_reader(
+            util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
         csv::CSVBatchWriter csv_writer(csv_out, {});
 
         while (auto batch = bruh_reader.ReadNext()) {
@@ -373,10 +385,11 @@ TEST(BruhFullInterface, LogicalAndCharTypes) {
         bruh_writer.Flush();
     }
 
-    bruh_ss.seekg(0);
+    auto buf = bruh_ss.str();
     std::ostringstream csv_out;
     {
-        bruh::BruhBatchReader bruh_reader(bruh_ss);
+        bruh::BruhBatchReader bruh_reader(
+            util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
         csv::CSVBatchWriter csv_writer(csv_out, {});
 
         while (auto batch = bruh_reader.ReadNext()) {

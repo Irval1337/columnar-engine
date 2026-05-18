@@ -5,10 +5,12 @@
 #include <core/schema.h>
 #include <exec/column_helpers.h>
 #include <exec/expression.h>
+#include <exec/kernel.h>
 #include <util/macro.h>
 
 #include <algorithm>
 #include <utility>
+#include <vector>
 
 namespace columnar::exec {
 namespace {
@@ -16,6 +18,15 @@ struct RowRef {
     uint32_t batch_idx;
     uint32_t row_idx;
 };
+
+bool RequiresDenseBatch(const std::vector<SortUnit>& sort_units) {
+    for (auto& unit : sort_units) {
+        if (!IsTrivialExpression(*unit.expression)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 int CompareRowRefs(const core::Column& col_a, size_t row_a, const core::Column& col_b,
                    size_t row_b) {
@@ -64,12 +75,19 @@ int CompareRowRefs(const core::Column& col_a, size_t row_a, const core::Column& 
 
 TopNSink::TopNSink(IOperator& downstream, std::vector<SortUnit> sort_units,
                    std::optional<size_t> limit, std::optional<size_t> offset)
-    : downstream_(downstream), sort_units_(std::move(sort_units)), limit_(limit), offset_(offset) {
+    : downstream_(downstream),
+      sort_units_(std::move(sort_units)),
+      limit_(limit),
+      offset_(offset),
+      needs_dense_(RequiresDenseBatch(sort_units_)) {
 }
 
 void TopNSink::Consume(core::Batch batch) {
-    if (batch.RowsCount() == 0) {
+    if (batch.SelectedRowsCount() == 0) {
         return;
+    }
+    if (batch.HasSelection() && needs_dense_) {
+        batch = kernel::Materialize(batch);
     }
     buffer_.push_back(std::move(batch));
 }
@@ -81,16 +99,25 @@ void TopNSink::Finalize() {
     }
     size_t total_rows = 0;
     for (auto& b : buffer_) {
-        total_rows += b.RowsCount();
+        total_rows += b.SelectedRowsCount();
     }
-    std::vector<RowRef> refs;
-    refs.reserve(total_rows);
-    for (size_t b = 0; b < buffer_.size(); ++b) {
-        size_t rows = buffer_[b].RowsCount();
-        for (size_t r = 0; r < rows; ++r) {
-            refs.push_back({static_cast<uint32_t>(b), static_cast<uint32_t>(r)});
+
+    auto for_each_input_row = [&](auto&& emit) {
+        for (size_t b = 0; b < buffer_.size(); ++b) {
+            const auto& batch = buffer_[b];
+            if (batch.HasSelection()) {
+                for (uint32_t r : batch.Selection()) {
+                    emit(static_cast<uint32_t>(b), r);
+                }
+            } else {
+                size_t rows = batch.RowsCount();
+                for (size_t r = 0; r < rows; ++r) {
+                    emit(static_cast<uint32_t>(b), static_cast<uint32_t>(r));
+                }
+            }
         }
-    }
+    };
+
     std::vector<std::vector<EvalResult>> sort_evals(sort_units_.size());
     std::vector<std::vector<const core::Column*>> sort_cols(sort_units_.size());
     for (size_t s = 0; s < sort_units_.size(); ++s) {
@@ -111,22 +138,48 @@ void TopNSink::Finalize() {
             }
             return sort_units_[s].ascending ? cmp < 0 : cmp > 0;
         }
-        return false;
+        if (a.batch_idx != b.batch_idx) {
+            return a.batch_idx < b.batch_idx;
+        }
+        return a.row_idx < b.row_idx;
     };
 
     size_t offset = offset_.value_or(0);
-    if (limit_ && offset + *limit_ < refs.size()) {
-        size_t prefix = offset + *limit_;
-        std::partial_sort(refs.begin(), refs.begin() + prefix, refs.end(), less);
-        refs.resize(prefix);
+
+    size_t prefix = total_rows;
+    if (limit_ && offset < total_rows) {
+        prefix = offset + std::min(*limit_, total_rows - offset);
+    }
+
+    std::vector<RowRef> refs;
+    if (limit_ && prefix < total_rows) {
+        refs.reserve(prefix);
+        if (prefix > 0) {
+            for_each_input_row([&](uint32_t b, uint32_t r) {
+                RowRef ref{b, r};
+                if (refs.size() < prefix) {
+                    refs.push_back(ref);
+                    std::push_heap(refs.begin(), refs.end(), less);
+                } else if (less(ref, refs.front())) {
+                    std::pop_heap(refs.begin(), refs.end(), less);
+                    refs.back() = ref;
+                    std::push_heap(refs.begin(), refs.end(), less);
+                }
+            });
+            std::sort_heap(refs.begin(), refs.end(), less);
+        }
     } else {
+        refs.reserve(total_rows);
+        for_each_input_row([&](uint32_t b, uint32_t r) { refs.push_back({b, r}); });
         std::sort(refs.begin(), refs.end(), less);
     }
+
     if (offset >= refs.size()) {
         refs.clear();
     } else if (offset > 0) {
         refs.erase(refs.begin(), refs.begin() + offset);
     }
+
     core::Batch out(buffer_.front().GetSchema(), refs.size());
     size_t cols = buffer_.front().ColumnsCount();
     for (size_t c = 0; c < cols; ++c) {

@@ -81,7 +81,7 @@ void AppendRow(core::Batch& batch, const Row& r) {
     batch.ColumnAt(24).AppendFromString(std::to_string(r.trafic_source_id));
 }
 
-std::stringstream MakeClickBenchMiniFile() {
+std::string MakeClickBenchMiniFile() {
     auto schema = ClickBenchMiniSchema();
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
     {
@@ -165,20 +165,35 @@ std::stringstream MakeClickBenchMiniFile() {
         writer.Write(batch);
         writer.Flush();
     }
-    ss.seekg(0);
-    return ss;
+    return ss.str();
+}
+
+util::ByteView AsBytes(const std::string& s) {
+    return util::ByteView{reinterpret_cast<const uint8_t*>(s.data()), s.size()};
 }
 
 core::Batch RunMiniQuery(size_t query_id) {
-    auto ss = MakeClickBenchMiniFile();
-    auto batches = exec::ExecuteClickBenchQuery(ss, query_id);
+    auto buf = MakeClickBenchMiniFile();
+    auto batches = exec::ExecuteClickBenchQuery(AsBytes(buf), query_id);
     EXPECT_EQ(batches.size(), 1);
     return std::move(batches[0]);
 }
 
 core::Batch RunPlan(std::shared_ptr<exec::Operator> plan) {
-    auto ss = MakeClickBenchMiniFile();
-    bruh::BruhBatchReader reader(ss);
+    auto buf = MakeClickBenchMiniFile();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+    auto batches = exec::Execute(reader, std::move(plan));
+    EXPECT_EQ(batches.size(), 1);
+    return std::move(batches[0]);
+}
+
+core::Batch RunPlanOnBatch(const core::Batch& batch, std::shared_ptr<exec::Operator> plan) {
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    bruh::BruhBatchWriter writer(ss, batch.GetSchema());
+    writer.Write(batch);
+    writer.Flush();
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
     auto batches = exec::Execute(reader, std::move(plan));
     EXPECT_EQ(batches.size(), 1);
     return std::move(batches[0]);
@@ -194,8 +209,8 @@ size_t TotalRows(const std::vector<core::Batch>& batches) {
 }  // namespace
 
 TEST(BruhBatchReader, ReadProjectedRowGroup) {
-    auto ss = MakeClickBenchMiniFile();
-    bruh::BruhBatchReader reader(ss);
+    auto buf = MakeClickBenchMiniFile();
+    bruh::BruhBatchReader reader(AsBytes(buf));
 
     auto projected = reader.ReadRowGroup(0, std::vector<std::string>{"UserID", "SearchPhrase"});
     EXPECT_EQ(projected.ColumnsCount(), 2);
@@ -207,8 +222,8 @@ TEST(BruhBatchReader, ReadProjectedRowGroup) {
 }
 
 TEST(BruhBatchReader, ReadZeroColumnsReturnsEmptyBatch) {
-    auto ss = MakeClickBenchMiniFile();
-    bruh::BruhBatchReader reader(ss);
+    auto buf = MakeClickBenchMiniFile();
+    bruh::BruhBatchReader reader(AsBytes(buf));
 
     auto projected = reader.ReadRowGroup(0, std::vector<size_t>{});
     EXPECT_EQ(projected.ColumnsCount(), 0);
@@ -224,6 +239,29 @@ TEST(ClickBenchQueries, CountStar) {
 TEST(ClickBenchQueries, FilteredCount) {
     auto result = RunMiniQuery(1);
     EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "2");
+}
+
+TEST(FilterOperator, FusedAndInAndContains) {
+    auto traffic = exec::MakeColumnExpr("TraficSourceID", core::DataType::Int64);
+    auto in_traffic = exec::MakeBinary(
+        exec::BinaryFunction::Or,
+        exec::MakeBinary(exec::BinaryFunction::Equal, traffic, exec::MakeConst(int64_t{-1})),
+        exec::MakeBinary(exec::BinaryFunction::Equal, traffic, exec::MakeConst(int64_t{6})));
+    auto condition = exec::MakeBinary(
+        exec::BinaryFunction::And,
+        exec::MakeBinary(
+            exec::BinaryFunction::And,
+            exec::MakeBinary(exec::BinaryFunction::Equal,
+                             exec::MakeColumnExpr("CounterID", core::DataType::Int64),
+                             exec::MakeConst(int64_t{62})),
+            std::move(in_traffic)),
+        exec::MakeContains(exec::MakeColumnExpr("URL", core::DataType::String), "google"));
+    auto plan = exec::MakeProject(
+        exec::MakeFilter(exec::MakeScan(), std::move(condition)),
+        {exec::ProjectionUnit{exec::MakeColumnExpr("URL", core::DataType::String), "URL"}});
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.RowsCount(), 1);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "google.com");
 }
 
 TEST(ClickBenchQueries, SumCountAvg) {
@@ -256,8 +294,8 @@ TEST(ClickBenchQueries, MinMaxEventDate) {
 }
 
 TEST(ClickBenchQueries, UnsupportedQueryThrows) {
-    auto ss = MakeClickBenchMiniFile();
-    EXPECT_THROW(exec::ExecuteClickBenchQuery(ss, 99), std::runtime_error);
+    auto buf = MakeClickBenchMiniFile();
+    EXPECT_THROW(exec::ExecuteClickBenchQuery(AsBytes(buf), 99), std::runtime_error);
 }
 
 TEST(ProjectOperator, RenameColumn) {
@@ -280,6 +318,24 @@ TEST(ProjectOperator, ConstantColumn) {
     auto result = RunPlan(plan);
     EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "42");
     EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "42");
+}
+
+TEST(GlobalAggregation, FilteredReductionsUseSelection) {
+    auto width = exec::MakeColumnExpr("ResolutionWidth", core::DataType::Int64);
+    auto filter = exec::MakeFilter(
+        exec::MakeScan(),
+        exec::MakeBinary(exec::BinaryFunction::Equal,
+                         exec::MakeColumnExpr("CounterID", core::DataType::Int64),
+                         exec::MakeConst(static_cast<int64_t>(62))));
+    auto plan = exec::MakeGlobalAggregation(
+        std::move(filter), {exec::Sum(width, "sum_width"), exec::Count("c"),
+                            exec::Min(width, "min_width"), exec::Max(width, "max_width")});
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.ColumnsCount(), 4);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "300");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "2");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "100");
+    EXPECT_EQ(result.ColumnAt(3).GetAsString(0), "200");
 }
 
 TEST(HashAggregation, GroupByIntKey) {
@@ -321,6 +377,116 @@ TEST(HashAggregation, GroupByStringKey) {
             FAIL() << "unexpected key: " << key;
         }
     }
+}
+
+TEST(HashAggregation, GroupByBoolKey) {
+    core::Schema schema(
+        {core::Field("flag", core::DataType::Bool), core::Field("value", core::DataType::Int64)});
+    core::Batch batch(schema);
+    batch.ColumnAt(0).AppendFromString("true");
+    batch.ColumnAt(1).AppendFromString("10");
+    batch.ColumnAt(0).AppendFromString("false");
+    batch.ColumnAt(1).AppendFromString("20");
+    batch.ColumnAt(0).AppendFromString("true");
+    batch.ColumnAt(1).AppendFromString("30");
+
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(), exec::MakeColumnExpr("flag", core::DataType::Bool), "flag",
+        {exec::Count("count"),
+         exec::Sum(exec::MakeColumnExpr("value", core::DataType::Int64), "sum")});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 2);
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        auto key = result.ColumnAt(0).GetAsString(row);
+        if (key == "1") {
+            EXPECT_EQ(result.ColumnAt(1).GetAsString(row), "2");
+            EXPECT_EQ(result.ColumnAt(2).GetAsString(row), "40");
+        } else if (key == "0") {
+            EXPECT_EQ(result.ColumnAt(1).GetAsString(row), "1");
+            EXPECT_EQ(result.ColumnAt(2).GetAsString(row), "20");
+        } else {
+            FAIL() << "unexpected key: " << key;
+        }
+    }
+}
+
+TEST(HashAggregation, EmitsGroupsInFirstSeenOrder) {
+    core::Schema schema(
+        {core::Field("key", core::DataType::Int64), core::Field("value", core::DataType::Int64)});
+    core::Batch batch(schema);
+    for (auto [key, value] : std::vector<std::pair<int64_t, int64_t>>{
+             {3, 10}, {1, 20}, {2, 30}, {3, 40}}) {
+        batch.ColumnAt(0).AppendFromString(std::to_string(key));
+        batch.ColumnAt(1).AppendFromString(std::to_string(value));
+    }
+
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(), exec::MakeColumnExpr("key", core::DataType::Int64), "key",
+        {exec::Count("count"),
+         exec::Sum(exec::MakeColumnExpr("value", core::DataType::Int64), "sum")});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 3);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "3");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "2");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "50");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "1");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(1), "1");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(1), "20");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "2");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(2), "1");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(2), "30");
+}
+
+TEST(HashAggregation, SumDoubleUsesWideAccumulator) {
+    core::Schema schema(
+        {core::Field("key", core::DataType::Int64), core::Field("value", core::DataType::Double)});
+    core::Batch batch(schema);
+    for (std::string_view value : {"10000000000000000", "1", "-10000000000000000"}) {
+        batch.ColumnAt(0).AppendFromString("1");
+        batch.ColumnAt(1).AppendFromString(value);
+    }
+
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(), exec::MakeColumnExpr("key", core::DataType::Int64), "key",
+        {exec::Sum(exec::MakeColumnExpr("value", core::DataType::Double), "sum")});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 1);
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "1.000000");
+}
+
+TEST(HashAggregation, CompositeKeyMergesDuplicateGroups) {
+    struct Row {
+        int64_t user;
+        std::string_view phrase;
+        int64_t value;
+    };
+
+    core::Schema schema({core::Field("user", core::DataType::Int64),
+                         core::Field("phrase", core::DataType::String),
+                         core::Field("value", core::DataType::Int64)});
+    core::Batch batch(schema);
+    for (auto row : std::vector<Row>{{1, "alpha", 10}, {2, "beta", 5}, {1, "alpha", 7}}) {
+        batch.ColumnAt(0).AppendFromString(std::to_string(row.user));
+        batch.ColumnAt(1).AppendFromString(std::string(row.phrase));
+        batch.ColumnAt(2).AppendFromString(std::to_string(row.value));
+    }
+
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(),
+        {exec::ProjectionUnit{exec::MakeColumnExpr("user", core::DataType::Int64), "user"},
+         exec::ProjectionUnit{exec::MakeColumnExpr("phrase", core::DataType::String), "phrase"}},
+        {exec::Count("count"), exec::Sum(exec::MakeColumnExpr("value", core::DataType::Int64),
+                                         "sum")});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 2);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "1");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(0), "alpha");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "2");
+    EXPECT_EQ(result.ColumnAt(3).GetAsString(0), "17");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "2");
+    EXPECT_EQ(result.ColumnAt(1).GetAsString(1), "beta");
+    EXPECT_EQ(result.ColumnAt(2).GetAsString(1), "1");
+    EXPECT_EQ(result.ColumnAt(3).GetAsString(1), "5");
 }
 
 TEST(HashAggregation, MixedAggregates) {
@@ -394,6 +560,26 @@ TEST(TopNOperator, MultiKeySort) {
     EXPECT_EQ(result.ColumnAt(adv).GetAsString(2), "1");
 }
 
+TEST(TopNOperator, TiesKeepInputOrder) {
+    core::Schema schema(
+        {core::Field("id", core::DataType::Int64), core::Field("score", core::DataType::Int64)});
+    core::Batch batch(schema);
+    for (auto [id, score] : std::vector<std::pair<int64_t, int64_t>>{{10, 5}, {11, 5}, {12, 5}}) {
+        batch.ColumnAt(0).AppendFromString(std::to_string(id));
+        batch.ColumnAt(1).AppendFromString(std::to_string(score));
+    }
+
+    auto id_expr = exec::MakeColumnExpr("id", core::DataType::Int64);
+    auto plan = exec::MakeTopN(
+        exec::MakeScan(),
+        {exec::SortUnit{exec::MakeBinary(exec::BinaryFunction::Minus, id_expr, id_expr), false}},
+        2);
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 2);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "10");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "11");
+}
+
 TEST(ClickBenchQueries, Q7GroupByCount) {
     auto result = RunMiniQuery(7);
     ASSERT_EQ(result.RowsCount(), 2);
@@ -427,8 +613,8 @@ TEST(ClickBenchQueries, Q15CountPerUser) {
 }
 
 TEST(ClickBenchQueries, Q19EmptyMatch) {
-    auto ss = MakeClickBenchMiniFile();
-    auto batches = exec::ExecuteClickBenchQuery(ss, 19);
+    auto buf = MakeClickBenchMiniFile();
+    auto batches = exec::ExecuteClickBenchQuery(AsBytes(buf), 19);
     size_t total_rows = 0;
     for (auto& batch : batches) {
         total_rows += batch.RowsCount();
@@ -750,17 +936,49 @@ TEST(Expression, CaseWhen) {
 }
 
 TEST(Expression, RegexReplaceExtractsHost) {
+    core::Schema schema({core::Field("URL", core::DataType::String)});
+    core::Batch batch(schema);
+    batch.ColumnAt(0).AppendFromString("example.com");
+    batch.ColumnAt(0).AppendFromString("https://www.google.org/path");
+    batch.ColumnAt(0).AppendFromString("http://state=19945206/a\nb");
+    batch.ColumnAt(0).AppendFromString("http://state=19945206/a\rb");
+
     auto plan = exec::MakeProject(
         exec::MakeScan(),
         {exec::ProjectionUnit{
             exec::MakeRegexReplace(exec::MakeColumnExpr("URL", core::DataType::String),
                                    R"(^https?://(?:www\.)?([^/]+)/.*$)", R"(\1)"),
             "host"}});
-    auto result = RunPlan(plan);
-    ASSERT_EQ(result.RowsCount(), 3);
-    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "example.com");  // no scheme: unchanged
-    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "google.com");   // no scheme: unchanged
-    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "google.org");   // host extracted
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 4);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "example.com");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "google.org");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "http://state=19945206/a\nb");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(3), "state=19945206");
+}
+
+TEST(Expression, PrefixCaptureHandlesGenericPrefixes) {
+    core::Schema schema({core::Field("Value", core::DataType::String)});
+    core::Batch batch(schema);
+    batch.ColumnAt(0).AppendFromString("prefix-alpha|tail");
+    batch.ColumnAt(0).AppendFromString("prefix-v2-beta|tail");
+    batch.ColumnAt(0).AppendFromString("prefix-|tail");
+    batch.ColumnAt(0).AppendFromString("prefix-alpha|tail\nmore");
+    batch.ColumnAt(0).AppendFromString("other-alpha|tail");
+
+    auto plan = exec::MakeProject(
+        exec::MakeScan(),
+        {exec::ProjectionUnit{
+            exec::MakePrefixCapture(exec::MakeColumnExpr("Value", core::DataType::String),
+                                    {"prefix-v2-", "prefix-"}, '|'),
+            "extracted"}});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 5);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "alpha");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(1), "beta");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(2), "prefix-|tail");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(3), "prefix-alpha|tail\nmore");
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(4), "other-alpha|tail");
 }
 
 TEST(Kernel, TimestampAndLengthFunctions) {
@@ -808,15 +1026,16 @@ TEST(ClickBenchQueries, Q23WatchIdEventTimeUrlTitle) {
 
 TEST(ClickBenchQueries, HavingAndDateQueriesRunOnMiniData) {
     for (size_t query : {27, 28, 40, 41, 42}) {
-        auto ss = MakeClickBenchMiniFile();
-        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(ss, query)), 0u) << "query " << query;
+        auto buf = MakeClickBenchMiniFile();
+        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(AsBytes(buf), query)), 0u)
+            << "query " << query;
     }
     {
-        auto ss = MakeClickBenchMiniFile();
-        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(ss, 38)), 1u);
+        auto buf = MakeClickBenchMiniFile();
+        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(AsBytes(buf), 38)), 1u);
     }
     {
-        auto ss = MakeClickBenchMiniFile();
-        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(ss, 39)), 2u);
+        auto buf = MakeClickBenchMiniFile();
+        EXPECT_EQ(TotalRows(exec::ExecuteClickBenchQuery(AsBytes(buf), 39)), 2u);
     }
 }
