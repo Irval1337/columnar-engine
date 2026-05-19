@@ -9,7 +9,10 @@
 #include <exec/kernel.h>
 #include <util/macro.h>
 
+#include <cassert>
+#include <functional>
 #include <limits>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -74,48 +77,202 @@ bool RequiresDenseBatch(const std::vector<ProjectionUnit>& keys,
 }
 }  // namespace
 
-size_t HashAggregationSink::HashCompositeKey(const CompositeKey& key) noexcept {
-    size_t seed = key.size();
-    for (auto& component : key) {
-        std::visit(
-            [&](const auto& value) {
-                using T = std::decay_t<decltype(value)>;
-                if constexpr (std::is_same_v<T, int64_t>) {
-                    HashCombine(seed, std::hash<int64_t>{}(value));
-                } else {
-                    HashCombine(seed, std::hash<std::string>{}(value));
-                }
-            },
-            component);
+HashAggregationSink::CompositeKeyStorage::CompositeKeyStorage(
+    const std::vector<ProjectionUnit>& keys)
+    : groups_(0, GroupHash{this}, GroupEq{this}) {
+    part_kinds_.reserve(keys.size());
+    int_group_keys_.resize(keys.size());
+    string_group_keys_.resize(keys.size());
+    for (auto& key : keys) {
+        auto type = GetExpressionType(*key.expression);
+        part_kinds_.push_back(type == core::DataType::String ? PartKind::String : PartKind::Int64);
+    }
+}
+
+HashAggregationSink::CompositeKeyStorage::ProbeKey
+HashAggregationSink::CompositeKeyStorage::MakeProbe(const Batch& batch, size_t row) const noexcept {
+    return ProbeKey{&batch, row, batch.HashRow(row)};
+}
+
+bool HashAggregationSink::CompositeKeyStorage::LookupGroup(const ProbeKey& key,
+                                                           uint32_t& group_id) const {
+    auto it = groups_.find(key);
+    if (it == groups_.end()) {
+        return false;
+    }
+    group_id = *it;
+    return true;
+}
+
+void HashAggregationSink::CompositeKeyStorage::InsertGroup(uint32_t group_id, const ProbeKey& key) {
+    assert(group_id == group_hashes_.size());
+    group_hashes_.push_back(key.hash);
+    for (size_t i = 0; i < part_kinds_.size(); ++i) {
+        if (part_kinds_[i] == PartKind::String) {
+            auto value = key.batch->ReadString(i, key.row);
+            string_group_keys_[i].emplace_back(value);
+        } else {
+            int_group_keys_[i].push_back(key.batch->ReadInt(i, key.row));
+        }
+    }
+    groups_.insert(group_id);
+}
+
+void HashAggregationSink::CompositeKeyStorage::AppendKey(uint32_t group_id, size_t key_index,
+                                                         core::Column& out) const {
+    if (part_kinds_[key_index] == PartKind::String) {
+        out.AppendFromString(string_group_keys_[key_index][group_id]);
+    } else {
+        AppendInteger(out, int_group_keys_[key_index][group_id]);
+    }
+}
+
+size_t HashAggregationSink::CompositeKeyStorage::HashGroup(uint32_t group_id) const noexcept {
+    return group_hashes_[group_id];
+}
+
+bool HashAggregationSink::CompositeKeyStorage::GroupsEqual(uint32_t lhs,
+                                                           uint32_t rhs) const noexcept {
+    if (group_hashes_[lhs] != group_hashes_[rhs]) {
+        return false;
+    }
+    for (size_t i = 0; i < part_kinds_.size(); ++i) {
+        if (part_kinds_[i] == PartKind::String) {
+            if (string_group_keys_[i][lhs] != string_group_keys_[i][rhs]) {
+                return false;
+            }
+        } else if (int_group_keys_[i][lhs] != int_group_keys_[i][rhs]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool HashAggregationSink::CompositeKeyStorage::GroupEqualsProbe(
+    uint32_t group_id, const ProbeKey& key) const noexcept {
+    if (group_hashes_[group_id] != key.hash) {
+        return false;
+    }
+    for (size_t i = 0; i < part_kinds_.size(); ++i) {
+        if (part_kinds_[i] == PartKind::String) {
+            auto stored_value = std::string_view(string_group_keys_[i][group_id]);
+            if (stored_value != key.batch->ReadString(i, key.row)) {
+                return false;
+            }
+        } else if (int_group_keys_[i][group_id] != key.batch->ReadInt(i, key.row)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool HashAggregationSink::CompositeKeyStorage::ProbesEqual(const ProbeKey& lhs,
+                                                           const ProbeKey& rhs) const noexcept {
+    if (lhs.hash != rhs.hash) {
+        return false;
+    }
+    for (size_t i = 0; i < part_kinds_.size(); ++i) {
+        if (part_kinds_[i] == PartKind::String) {
+            if (lhs.batch->ReadString(i, lhs.row) != rhs.batch->ReadString(i, rhs.row)) {
+                return false;
+            }
+        } else if (lhs.batch->ReadInt(i, lhs.row) != rhs.batch->ReadInt(i, rhs.row)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+size_t HashAggregationSink::CompositeKeyStorage::GroupHash::operator()(
+    uint32_t group_id) const noexcept {
+    return storage->HashGroup(group_id);
+}
+
+size_t HashAggregationSink::CompositeKeyStorage::GroupHash::operator()(
+    const ProbeKey& key) const noexcept {
+    return key.hash;
+}
+
+bool HashAggregationSink::CompositeKeyStorage::GroupEq::operator()(uint32_t lhs,
+                                                                   uint32_t rhs) const noexcept {
+    return storage->GroupsEqual(lhs, rhs);
+}
+
+bool HashAggregationSink::CompositeKeyStorage::GroupEq::operator()(
+    uint32_t lhs, const ProbeKey& rhs) const noexcept {
+    return storage->GroupEqualsProbe(lhs, rhs);
+}
+
+bool HashAggregationSink::CompositeKeyStorage::GroupEq::operator()(const ProbeKey& lhs,
+                                                                   uint32_t rhs) const noexcept {
+    return storage->GroupEqualsProbe(rhs, lhs);
+}
+
+bool HashAggregationSink::CompositeKeyStorage::GroupEq::operator()(
+    const ProbeKey& lhs, const ProbeKey& rhs) const noexcept {
+    return storage->ProbesEqual(lhs, rhs);
+}
+
+HashAggregationSink::CompositeKeyStorage::Batch::Batch(
+    const CompositeKeyStorage& storage, const std::vector<const core::Column*>& columns)
+    : storage_(storage),
+      columns_(columns),
+      dictionary_columns_(columns.size(), nullptr),
+      dictionary_hashes_(columns.size()) {
+    for (size_t i = 0; i < columns_.size(); ++i) {
+        if (storage_.part_kinds_[i] != PartKind::String) {
+            continue;
+        }
+        dictionary_columns_[i] = dynamic_cast<const core::DictionaryStringColumn*>(columns_[i]);
+        if (dictionary_columns_[i] == nullptr) {
+            continue;
+        }
+        auto& hashes = dictionary_hashes_[i];
+        hashes.resize(dictionary_columns_[i]->DictSize());
+        for (uint32_t id = 0; id < hashes.size(); ++id) {
+            hashes[id] = std::hash<std::string_view>{}(dictionary_columns_[i]->DictValue(id));
+        }
+    }
+}
+
+bool HashAggregationSink::CompositeKeyStorage::Batch::HasNull(size_t row) const {
+    for (auto* col : columns_) {
+        if (col->IsNull(row)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+size_t HashAggregationSink::CompositeKeyStorage::Batch::HashRow(size_t row) const noexcept {
+    size_t seed = storage_.part_kinds_.size();
+    for (size_t i = 0; i < storage_.part_kinds_.size(); ++i) {
+        if (storage_.part_kinds_[i] == PartKind::String) {
+            size_t part_hash;
+            if (dictionary_columns_[i] != nullptr) {
+                part_hash = dictionary_hashes_[i][dictionary_columns_[i]->GetId(row)];
+            } else {
+                part_hash = std::hash<std::string_view>{}(ReadString(i, row));
+            }
+            HashCombine(seed, part_hash);
+        } else {
+            HashCombine(seed, std::hash<int64_t>{}(ReadInt(i, row)));
+        }
     }
     return seed;
 }
 
-size_t HashAggregationSink::CompositeGroupHash::operator()(uint32_t group_id) const noexcept {
-    return HashCompositeKey((*keys)[group_id]);
+int64_t HashAggregationSink::CompositeKeyStorage::Batch::ReadInt(size_t key_index,
+                                                                 size_t row) const {
+    return ReadIntegerRow(*columns_[key_index], row);
 }
 
-size_t HashAggregationSink::CompositeGroupHash::operator()(const CompositeKey& key) const noexcept {
-    return HashCompositeKey(key);
-}
-
-bool HashAggregationSink::CompositeGroupEq::operator()(uint32_t lhs, uint32_t rhs) const noexcept {
-    return (*keys)[lhs] == (*keys)[rhs];
-}
-
-bool HashAggregationSink::CompositeGroupEq::operator()(uint32_t lhs,
-                                                       const CompositeKey& rhs) const noexcept {
-    return (*keys)[lhs] == rhs;
-}
-
-bool HashAggregationSink::CompositeGroupEq::operator()(const CompositeKey& lhs,
-                                                       uint32_t rhs) const noexcept {
-    return lhs == (*keys)[rhs];
-}
-
-bool HashAggregationSink::CompositeGroupEq::operator()(const CompositeKey& lhs,
-                                                       const CompositeKey& rhs) const noexcept {
-    return lhs == rhs;
+std::string_view HashAggregationSink::CompositeKeyStorage::Batch::ReadString(size_t key_index,
+                                                                             size_t row) const {
+    if (dictionary_columns_[key_index] != nullptr) {
+        return dictionary_columns_[key_index]->Get(row);
+    }
+    return static_cast<const core::StringColumn&>(*columns_[key_index]).Get(row);
 }
 
 size_t HashAggregationSink::Int64PairHash::operator()(const Int64Pair& key) const noexcept {
@@ -159,8 +316,7 @@ HashAggregationSink::HashAggregationSink(IOperator& downstream, std::vector<Proj
       output_schema_(MakeHashAggregateSchema(keys_, aggregations_)),
       mode_(SelectKeyMode(keys_)),
       needs_dense_(RequiresDenseBatch(keys_, aggregations_)),
-      composite_groups_(0, CompositeGroupHash{&composite_group_keys_},
-                        CompositeGroupEq{&composite_group_keys_}) {
+      composite_keys_(keys_) {
     agg_arrays_.reserve(aggregations_.size());
     for (auto& unit : aggregations_) {
         switch (unit.type) {
@@ -462,35 +618,17 @@ void HashAggregationSink::ConsumeInt64Pair(const core::Column& first_key_col,
 void HashAggregationSink::ConsumeComposite(const std::vector<const core::Column*>& key_cols,
                                            const std::vector<const core::Column*>& agg_cols,
                                            const std::vector<uint32_t>* selection, size_t rows) {
-    CompositeKey key;
-    key.reserve(key_cols.size());
+    CompositeKeyStorage::Batch composite_batch(composite_keys_, key_cols);
     ForSelectedRows(selection, rows, [&](size_t row) {
-        key.clear();
-        key.reserve(key_cols.size());
-        bool has_null_key = false;
-        for (auto* col : key_cols) {
-            if (col->IsNull(row)) {
-                has_null_key = true;
-                break;
-            }
-            if (col->GetDataType() == core::DataType::String) {
-                key.emplace_back(std::string(ReadStringRow(*col, row)));
-            } else {
-                key.emplace_back(ReadIntegerRow(*col, row));
-            }
-        }
-        if (has_null_key) {
+        if (composite_batch.HasNull(row)) {
             return;
         }
 
-        auto it = composite_groups_.find(key);
+        auto key = composite_keys_.MakeProbe(composite_batch, row);
         uint32_t group_id;
-        if (it == composite_groups_.end()) {
+        if (!composite_keys_.LookupGroup(key, group_id)) {
             group_id = EmplaceGroup();
-            composite_group_keys_.push_back(std::move(key));
-            composite_groups_.insert(group_id);
-        } else {
-            group_id = *it;
+            composite_keys_.InsertGroup(group_id, key);
         }
         UpdateAggsForRow(group_id, agg_cols, row);
     });
@@ -572,19 +710,8 @@ void HashAggregationSink::Finalize() {
         }
     } else {
         for (uint32_t group_id = 0; group_id < groups_count_; ++group_id) {
-            const auto& key = composite_group_keys_[group_id];
             for (size_t i = 0; i < keys_.size(); ++i) {
-                auto& key_out = out.ColumnAt(i);
-                std::visit(
-                    [&](const auto& value) {
-                        using T = std::decay_t<decltype(value)>;
-                        if constexpr (std::is_same_v<T, int64_t>) {
-                            AppendInteger(key_out, value);
-                        } else {
-                            static_cast<core::StringColumn&>(key_out).Append(value);
-                        }
-                    },
-                    key[i]);
+                composite_keys_.AppendKey(group_id, i, out.ColumnAt(i));
             }
             append_aggs(group_id);
         }
