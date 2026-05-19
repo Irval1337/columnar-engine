@@ -1,5 +1,6 @@
 #include <exec/hash_aggregate_operator.h>
 
+#include <core/columns/dictionary_string_column.h>
 #include <core/columns/string_column.h>
 #include <core/datatype.h>
 #include <core/field.h>
@@ -370,6 +371,10 @@ void HashAggregationSink::ConsumeInt64(const core::Column& key_col,
 void HashAggregationSink::ConsumeString(const core::Column& key_col,
                                         const std::vector<const core::Column*>& agg_cols,
                                         const std::vector<uint32_t>* selection, size_t rows) {
+    if (auto* dict = dynamic_cast<const core::DictionaryStringColumn*>(&key_col)) {
+        ConsumeDictionaryString(*dict, agg_cols, selection, rows);
+        return;
+    }
     auto& s = static_cast<const core::StringColumn&>(key_col);
     ForSelectedRows(selection, rows, [&](size_t row) {
         if (s.IsNull(row)) {
@@ -386,6 +391,39 @@ void HashAggregationSink::ConsumeString(const core::Column& key_col,
             group_id = it->second;
         }
         UpdateAggsForRow(group_id, agg_cols, row);
+    });
+}
+
+void HashAggregationSink::ConsumeDictionaryString(const core::DictionaryStringColumn& key_col,
+                                                  const std::vector<const core::Column*>& agg_cols,
+                                                  const std::vector<uint32_t>* selection,
+                                                  size_t rows) {
+    constexpr uint32_t kUnknownGroup = std::numeric_limits<uint32_t>::max();
+    std::vector<uint32_t> id_to_group(key_col.DictSize(), kUnknownGroup);
+
+    auto resolve_group = [&](uint32_t local_id) {
+        uint32_t group_id = id_to_group[local_id];
+        if (group_id != kUnknownGroup) {
+            return group_id;
+        }
+        auto key = key_col.DictValue(local_id);
+        auto it = string_groups_.find(key);
+        if (it == string_groups_.end()) {
+            group_id = EmplaceGroup();
+            string_groups_.emplace(std::string(key), group_id);
+            string_group_keys_.emplace_back(key);
+        } else {
+            group_id = it->second;
+        }
+        id_to_group[local_id] = group_id;
+        return group_id;
+    };
+
+    ForSelectedRows(selection, rows, [&](size_t row) {
+        if (key_col.IsNull(row)) {
+            return;
+        }
+        UpdateAggsForRow(resolve_group(key_col.GetId(row)), agg_cols, row);
     });
 }
 

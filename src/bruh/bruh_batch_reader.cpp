@@ -1,5 +1,6 @@
 #include <bruh/bruh_batch_reader.h>
 #include <bruh/format.h>
+#include <core/columns/dictionary_string_column.h>
 #include <core/columns/date_column.h>
 #include <core/columns/timestamp_column.h>
 #include <core/encoding/bit_packing.h>
@@ -134,8 +135,9 @@ std::unique_ptr<core::Column> DecodeString(util::BufReader& r, bool nullable,
         }
         case core::Encoding::Dictionary: {
             auto decoded = core::encoding::DecodeStringDictionary(r, n);
-            return std::make_unique<core::StringColumn>(
-                std::move(decoded.data), std::move(decoded.offsets), std::move(is_null), nullable);
+            return std::make_unique<core::DictionaryStringColumn>(
+                std::move(decoded.dict_data), std::move(decoded.dict_offsets),
+                std::move(decoded.ids), std::move(is_null), nullable);
         }
         default:
             THROW_RUNTIME_ERROR("Encoding does not support string column");

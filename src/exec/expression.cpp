@@ -1,5 +1,6 @@
 #include <exec/expression.h>
 #include <core/columns/bool_column.h>
+#include <core/columns/dictionary_string_column.h>
 #include <core/columns/string_column.h>
 #include <exec/column_helpers.h>
 #include <exec/kernel.h>
@@ -9,6 +10,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace columnar::exec {
 namespace {
@@ -25,22 +27,26 @@ struct IntCompareTerm {
 
 struct StringCompareTerm {
     const core::Column* col = nullptr;
+    const core::DictionaryStringColumn* dict_col = nullptr;
     std::string_view value;
     BinaryFunction function = BinaryFunction::Equal;
+    std::vector<uint8_t> dict_matches;
 };
 
 struct ContainsTerm {
     const core::Column* col = nullptr;
+    const core::DictionaryStringColumn* dict_col = nullptr;
     std::string_view substring;
     bool negated = false;
+    std::vector<uint8_t> dict_matches;
 };
 
 struct BoolColumnTerm {
     const core::BoolColumn* col = nullptr;
 };
 
-using PredicateTerm = std::variant<InIntTerm, IntCompareTerm, StringCompareTerm, ContainsTerm,
-                                   BoolColumnTerm>;
+using PredicateTerm =
+    std::variant<InIntTerm, IntCompareTerm, StringCompareTerm, ContainsTerm, BoolColumnTerm>;
 
 std::unique_ptr<core::Column> EvalFunction(const core::Column& arg, ScalarFunction function) {
     switch (function) {
@@ -199,6 +205,30 @@ bool CompareValues(T lhs, T rhs, BinaryFunction function) {
     }
 }
 
+void PrepareDictionaryTerm(StringCompareTerm& term) {
+    term.dict_col = dynamic_cast<const core::DictionaryStringColumn*>(term.col);
+    if (term.dict_col == nullptr) {
+        return;
+    }
+    term.dict_matches.resize(term.dict_col->DictSize());
+    for (uint32_t id = 0; id < term.dict_matches.size(); ++id) {
+        term.dict_matches[id] =
+            CompareValues(term.dict_col->DictValue(id), term.value, term.function) ? 1 : 0;
+    }
+}
+
+void PrepareDictionaryTerm(ContainsTerm& term) {
+    term.dict_col = dynamic_cast<const core::DictionaryStringColumn*>(term.col);
+    if (term.dict_col == nullptr) {
+        return;
+    }
+    term.dict_matches.resize(term.dict_col->DictSize());
+    for (uint32_t id = 0; id < term.dict_matches.size(); ++id) {
+        bool found = term.dict_col->DictValue(id).find(term.substring) != std::string_view::npos;
+        term.dict_matches[id] = (term.negated ? !found : found) ? 1 : 0;
+    }
+}
+
 bool TryCollectInInts(const Expression& expr, const ColumnExpr*& column,
                       std::vector<int64_t>& values) {
     if (expr.type != ExpressionType::Binary) {
@@ -254,8 +284,10 @@ bool TryCompileSimpleTerm(const core::Batch& batch, const Expression& expr,
         if (column_expr.type != core::DataType::String) {
             return false;
         }
-        terms.push_back(ContainsTerm{&ResolveColumn(batch, column_expr), contains.substring,
-                                     contains.negated});
+        ContainsTerm term{
+            &ResolveColumn(batch, column_expr), nullptr, contains.substring, contains.negated, {}};
+        PrepareDictionaryTerm(term);
+        terms.push_back(std::move(term));
         return true;
     }
 
@@ -292,9 +324,13 @@ bool TryCompileSimpleTerm(const core::Batch& batch, const Expression& expr,
     }
     if (const_side->type == ExpressionType::ConstString &&
         column_expr.type == core::DataType::String) {
-        terms.push_back(StringCompareTerm{&ResolveColumn(batch, column_expr),
-                                          static_cast<const ConstString&>(*const_side).value,
-                                          function});
+        StringCompareTerm term{&ResolveColumn(batch, column_expr),
+                               nullptr,
+                               static_cast<const ConstString&>(*const_side).value,
+                               function,
+                               {}};
+        PrepareDictionaryTerm(term);
+        terms.push_back(std::move(term));
         return true;
     }
     return false;
@@ -338,18 +374,24 @@ bool MatchesTerm(const PredicateTerm& term, size_t row) {
                 return false;
             } else if constexpr (std::is_same_v<T, IntCompareTerm>) {
                 return !typed.col->IsNull(row) &&
-                       CompareValues(ReadIntegerRow(*typed.col, row), typed.value,
-                                     typed.function);
+                       CompareValues(ReadIntegerRow(*typed.col, row), typed.value, typed.function);
             } else if constexpr (std::is_same_v<T, StringCompareTerm>) {
-                return !typed.col->IsNull(row) &&
-                       CompareValues(ReadStringRow(*typed.col, row), typed.value,
-                                     typed.function);
+                if (typed.col->IsNull(row)) {
+                    return false;
+                }
+                if (typed.dict_col != nullptr) {
+                    return typed.dict_matches[typed.dict_col->GetId(row)] != 0;
+                }
+                return CompareValues(ReadStringRow(*typed.col, row), typed.value, typed.function);
             } else if constexpr (std::is_same_v<T, ContainsTerm>) {
                 if (typed.col->IsNull(row)) {
                     return false;
                 }
-                bool found = ReadStringRow(*typed.col, row).find(typed.substring) !=
-                             std::string_view::npos;
+                if (typed.dict_col != nullptr) {
+                    return typed.dict_matches[typed.dict_col->GetId(row)] != 0;
+                }
+                bool found =
+                    ReadStringRow(*typed.col, row).find(typed.substring) != std::string_view::npos;
                 return typed.negated ? !found : found;
             } else if constexpr (std::is_same_v<T, BoolColumnTerm>) {
                 return !typed.col->IsNull(row) && typed.col->Get(row);
@@ -497,16 +539,14 @@ EvalResult Evaluate(const core::Batch& batch, const Expression& expr) {
             auto& prefix_capture = static_cast<const PrefixCaptureExpr&>(expr);
             auto arg = Evaluate(batch, *prefix_capture.arg);
             return kernel::PrefixCapture(arg.Get(), prefix_capture.prefixes,
-                                         prefix_capture.delimiter,
-                                         prefix_capture.require_non_empty,
+                                         prefix_capture.delimiter, prefix_capture.require_non_empty,
                                          prefix_capture.single_line_tail);
         }
     }
     THROW_RUNTIME_ERROR("Unsupported expression type");
 }
 
-std::vector<uint32_t> EvaluatePredicateSelection(const core::Batch& batch,
-                                                 const Expression& expr) {
+std::vector<uint32_t> EvaluatePredicateSelection(const core::Batch& batch, const Expression& expr) {
     std::vector<PredicateTerm> terms;
     if (!TryCompileTerms(batch, expr, terms) ||
         (terms.size() == 1 && !std::holds_alternative<InIntTerm>(terms.front()))) {

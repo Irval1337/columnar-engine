@@ -4,6 +4,7 @@
 #include <core/columns/bool_column.h>
 #include <core/columns/char_column.h>
 #include <core/columns/date_column.h>
+#include <core/columns/dictionary_string_column.h>
 #include <core/columns/numeric_column.h>
 #include <core/columns/string_column.h>
 #include <core/columns/timestamp_column.h>
@@ -130,6 +131,9 @@ inline double ReadDoubleRow(const core::Column& col, size_t row) {
 }
 
 inline std::string_view ReadStringRow(const core::Column& col, size_t row) {
+    if (auto* dict = dynamic_cast<const core::DictionaryStringColumn*>(&col)) {
+        return dict->Get(row);
+    }
     return static_cast<const core::StringColumn&>(col).Get(row);
 }
 inline void AppendRow(core::Column& out, const core::Column& src, size_t row) {
@@ -139,7 +143,7 @@ inline void AppendRow(core::Column& out, const core::Column& src, size_t row) {
     }
     auto type = src.GetDataType();
     if (type == core::DataType::String) {
-        static_cast<core::StringColumn&>(out).Append(ReadStringRow(src, row));
+        out.AppendFromString(ReadStringRow(src, row));
         return;
     }
     if (type == core::DataType::Double) {

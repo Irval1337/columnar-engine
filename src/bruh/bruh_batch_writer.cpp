@@ -1,4 +1,5 @@
 #include <bruh/bruh_batch_writer.h>
+#include <core/columns/dictionary_string_column.h>
 #include <core/encoding/auto_select.h>
 #include <core/encoding/bit_packing.h>
 #include <core/encoding/delta.h>
@@ -12,7 +13,9 @@
 
 #include <cstdint>
 #include <limits>
+#include <string_view>
 #include <type_traits>
+#include <vector>
 
 namespace columnar::bruh {
 namespace {
@@ -151,24 +154,51 @@ void EncodeBool(util::BufWriter& w, const core::Column& col, bool nullable,
 
 void EncodeString(util::BufWriter& w, const core::Column& col, bool nullable,
                   core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding) {
-    auto& stringcol = static_cast<const core::StringColumn&>(col);
+    auto* stringcol = dynamic_cast<const core::StringColumn*>(&col);
+    auto* dictcol = dynamic_cast<const core::DictionaryStringColumn*>(&col);
+    if (stringcol == nullptr && dictcol == nullptr) {
+        THROW_RUNTIME_ERROR("Encoding string column expected a string implementation");
+    }
     if (nullable) {
-        WriteBitVector(w, stringcol.GetNullMask());
+        WriteBitVector(w, stringcol != nullptr ? stringcol->GetNullMask() : dictcol->GetNullMask());
     }
     switch (encoding) {
         case core::Encoding::Plain: {
-            auto& data = stringcol.GetData();
-            EncodeOffsetsPlain(w, stringcol.GetOffsets(), data.size());
-            w.WriteArray(data);
+            if (stringcol != nullptr) {
+                auto& data = stringcol->GetData();
+                EncodeOffsetsPlain(w, stringcol->GetOffsets(), data.size());
+                w.WriteArray(data);
+            } else {
+                std::vector<char> data;
+                std::vector<size_t> offsets;
+                offsets.reserve(dictcol->Size() + 1);
+                offsets.push_back(0);
+                for (size_t i = 0; i < dictcol->Size(); ++i) {
+                    if (!dictcol->IsNull(i)) {
+                        auto value = dictcol->Get(i);
+                        data.insert(data.end(), value.begin(), value.end());
+                    }
+                    offsets.push_back(data.size());
+                }
+                EncodeOffsetsPlain(w, offsets, data.size());
+                w.WriteArray(data);
+            }
             return;
         }
         case core::Encoding::Dictionary:
             if (!auto_encoding.dict_values.empty()) {
                 core::encoding::EncodeStringDictionary(w, auto_encoding.dict_values,
                                                        auto_encoding.dict_indexes);
+            } else if (dictcol != nullptr) {
+                std::vector<std::string_view> dict_values;
+                dict_values.reserve(dictcol->DictSize());
+                for (uint32_t id = 0; id < dictcol->DictSize(); ++id) {
+                    dict_values.push_back(dictcol->DictValue(id));
+                }
+                core::encoding::EncodeStringDictionary(w, dict_values, dictcol->GetIds());
             } else {
-                core::encoding::EncodeStringDictionary(w, stringcol.GetData(),
-                                                       stringcol.GetOffsets());
+                core::encoding::EncodeStringDictionary(w, stringcol->GetData(),
+                                                       stringcol->GetOffsets());
             }
             return;
         default:

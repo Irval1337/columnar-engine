@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <bruh/bruh.h>
+#include <core/columns/dictionary_string_column.h>
 #include <core/columns/string_column.h>
 #include <core/columns/timestamp_column.h>
 #include <exec/clickbench.h>
@@ -7,6 +8,7 @@
 #include <exec/operator.h>
 
 #include <set>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -199,6 +201,21 @@ core::Batch RunPlanOnBatch(const core::Batch& batch, std::shared_ptr<exec::Opera
     return std::move(batches[0]);
 }
 
+std::unique_ptr<core::DictionaryStringColumn> MakeDictionaryStringColumn(
+    std::vector<std::string_view> dict_values,
+    std::vector<uint32_t> ids) {
+    std::vector<char> data;
+    std::vector<size_t> offsets;
+    offsets.reserve(dict_values.size() + 1);
+    offsets.push_back(0);
+    for (auto value : dict_values) {
+        data.insert(data.end(), value.begin(), value.end());
+        offsets.push_back(data.size());
+    }
+    return std::make_unique<core::DictionaryStringColumn>(
+        std::move(data), std::move(offsets), std::move(ids), util::BitVector(), false);
+}
+
 size_t TotalRows(const std::vector<core::Batch>& batches) {
     size_t total = 0;
     for (auto& batch : batches) {
@@ -376,6 +393,28 @@ TEST(HashAggregation, GroupByStringKey) {
         } else {
             FAIL() << "unexpected key: " << key;
         }
+    }
+}
+
+TEST(HashAggregation, GroupByDictionaryStringKey) {
+    core::Schema schema({core::Field("URL", core::DataType::String)});
+    core::Batch batch(schema);
+    auto& col = batch.ColumnAt(0);
+    std::vector<std::string> values = {
+        "https://example.com/repeated/path",
+        "https://google.com/repeated/path",
+        "https://yandex.ru/repeated/path"};
+    for (size_t i = 0; i < 300; ++i) {
+        col.AppendFromString(values[i % values.size()]);
+    }
+
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(), exec::MakeColumnExpr("URL", core::DataType::String),
+        "URL", {exec::Count("count")});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 3);
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        EXPECT_EQ(result.ColumnAt(1).GetAsString(row), "100");
     }
 }
 
@@ -1000,6 +1039,30 @@ TEST(Kernel, TimestampAndLengthFunctions) {
     ASSERT_EQ(lengths->Size(), 2);
     EXPECT_EQ(lengths->GetAsString(0), "3");
     EXPECT_EQ(lengths->GetAsString(1), "0");
+}
+
+TEST(Kernel, DictionaryStringKernelsReuseDictionary) {
+    auto dict = MakeDictionaryStringColumn(
+        {"https://www.google.com/path", "http://example.org/a", "plain"},
+        {0, 1, 0, 2});
+
+    auto contains = exec::kernel::StrContains(*dict, "google", false);
+    ASSERT_EQ(contains->Size(), 4);
+    EXPECT_EQ(contains->GetAsString(0), "true");
+    EXPECT_EQ(contains->GetAsString(1), "false");
+    EXPECT_EQ(contains->GetAsString(2), "true");
+    EXPECT_EQ(contains->GetAsString(3), "false");
+
+    auto lengths = exec::kernel::StrLength(*dict);
+    EXPECT_EQ(lengths->GetAsString(0), "27");
+    EXPECT_EQ(lengths->GetAsString(2), "27");
+
+    auto captured = exec::kernel::PrefixCapture(*dict, {"https://", "http://"}, '/');
+    ASSERT_NE(dynamic_cast<core::DictionaryStringColumn*>(captured.get()), nullptr);
+    EXPECT_EQ(captured->GetAsString(0), "www.google.com");
+    EXPECT_EQ(captured->GetAsString(1), "example.org");
+    EXPECT_EQ(captured->GetAsString(2), "www.google.com");
+    EXPECT_EQ(captured->GetAsString(3), "plain");
 }
 
 TEST(ClickBenchQueries, Q18ExtractMinutePerUserAndPhrase) {

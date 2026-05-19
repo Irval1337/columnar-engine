@@ -3,6 +3,7 @@
 #include <core/encoding/dictionary.h>
 #include <core/columns/bool_column.h>
 #include <core/columns/char_column.h>
+#include <core/columns/dictionary_string_column.h>
 #include <core/columns/numeric_column.h>
 #include <core/columns/string_column.h>
 
@@ -203,7 +204,11 @@ AutoEncoding SelectEncoding(const Column& col, const Field& field) {
             result.encoding = PickCharEncoding(static_cast<const CharColumn&>(col));
             return result;
         case DataType::String:
-            PickStringEncoding(static_cast<const StringColumn&>(col), result);
+            if (dynamic_cast<const DictionaryStringColumn*>(&col) != nullptr) {
+                result.encoding = Encoding::Dictionary;
+            } else {
+                PickStringEncoding(static_cast<const StringColumn&>(col), result);
+            }
             return result;
         case DataType::Int16:
             PickIntegerEncoding(static_cast<const Int16Column&>(col).GetData(), false, result);

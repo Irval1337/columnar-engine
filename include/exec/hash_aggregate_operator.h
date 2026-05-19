@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/datatype.h>
+#include <core/columns/dictionary_string_column.h>
 #include <core/schema.h>
 #include <exec/aggregation.h>
 #include <exec/operator.h>
@@ -178,6 +179,9 @@ private:
     void ConsumeString(const core::Column& key_col,
                        const std::vector<const core::Column*>& agg_cols,
                        const std::vector<uint32_t>* selection, size_t rows);
+    void ConsumeDictionaryString(const core::DictionaryStringColumn& key_col,
+                                 const std::vector<const core::Column*>& agg_cols,
+                                 const std::vector<uint32_t>* selection, size_t rows);
     void ConsumeInt64Pair(const core::Column& first_key_col, const core::Column& second_key_col,
                           const std::vector<const core::Column*>& agg_cols,
                           const std::vector<uint32_t>* selection, size_t rows);
