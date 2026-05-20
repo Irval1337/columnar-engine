@@ -185,11 +185,8 @@ std::shared_ptr<Operator> QueryMaker::MakeQ0() const {
 
 std::shared_ptr<Operator> QueryMaker::MakeQ1() const {
     // SELECT COUNT(*) FROM hits WHERE AdvEngineID <> 0;
-    return MakeGlobalAggregation(
-        MakeFilter(MakeScan(),
-                   MakeBinary(BinaryFunction::NotEqual, ColumnRef(table_schema_, "AdvEngineID"),
-                              MakeConst(static_cast<int64_t>(0)))),
-        {Count("count")});
+    return MakeGlobalAggregation(MakeFilter(MakeScan(), Ne(table_schema_, "AdvEngineID", 0)),
+                                 {Count("count")});
 }
 
 std::shared_ptr<Operator> QueryMaker::MakeQ2() const {
@@ -225,11 +222,9 @@ std::shared_ptr<Operator> QueryMaker::MakeQ6() const {
 std::shared_ptr<Operator> QueryMaker::MakeQ7() const {
     // SELECT AdvEngineID, COUNT(*) FROM hits WHERE AdvEngineID <> 0
     // GROUP BY AdvEngineID ORDER BY COUNT(*) DESC;
-    auto agg = MakeHashAggregation(
-        MakeFilter(MakeScan(),
-                   MakeBinary(BinaryFunction::NotEqual, ColumnRef(table_schema_, "AdvEngineID"),
-                              MakeConst(static_cast<int64_t>(0)))),
-        ColumnRef(table_schema_, "AdvEngineID"), "AdvEngineID", {Count("count")});
+    auto agg = MakeHashAggregation(MakeFilter(MakeScan(), Ne(table_schema_, "AdvEngineID", 0)),
+                                   ColumnRef(table_schema_, "AdvEngineID"), "AdvEngineID",
+                                   {Count("count")});
     return MakeTopN(std::move(agg),
                     {SortUnit{MakeColumnExpr("count", core::DataType::Int64), false}});
 }
@@ -283,11 +278,9 @@ std::shared_ptr<Operator> QueryMaker::MakeQ11() const {
 std::shared_ptr<Operator> QueryMaker::MakeQ12() const {
     // SELECT SearchPhrase, COUNT(*) AS c FROM hits WHERE SearchPhrase <> ''
     // GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10;
-    auto agg = MakeHashAggregation(
-        MakeFilter(MakeScan(),
-                   MakeBinary(BinaryFunction::NotEqual, ColumnRef(table_schema_, "SearchPhrase"),
-                              MakeConst(std::string()))),
-        ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase", {Count("c")});
+    auto agg = MakeHashAggregation(MakeFilter(MakeScan(), NotEmpty(table_schema_, "SearchPhrase")),
+                                   ColumnRef(table_schema_, "SearchPhrase"), "SearchPhrase",
+                                   {Count("c")});
     return MakeTopN(std::move(agg), {SortUnit{MakeColumnExpr("c", core::DataType::Int64), false}},
                     10);
 }
@@ -373,10 +366,7 @@ std::shared_ptr<Operator> QueryMaker::MakeQ18() const {
 
 std::shared_ptr<Operator> QueryMaker::MakeQ19() const {
     // SELECT UserID FROM hits WHERE UserID = 435090932899640449;
-    auto user_id = ColumnRef(table_schema_, "UserID");
-    auto filter =
-        MakeFilter(MakeScan(), MakeBinary(BinaryFunction::Equal, user_id,
-                                          MakeConst(static_cast<int64_t>(435090932899640449LL))));
+    auto filter = MakeFilter(MakeScan(), Eq(table_schema_, "UserID", 435090932899640449LL));
     return MakeProject(std::move(filter),
                        {ProjectionUnit{ColumnRef(table_schema_, "UserID"), "UserID"}});
 }
@@ -611,18 +601,10 @@ std::shared_ptr<Operator> QueryMaker::MakeQ36() const {
     // WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31'
     // AND DontCountHits = 0 AND IsRefresh = 0 AND URL <> ''
     // GROUP BY URL ORDER BY PageViews DESC LIMIT 10;
-    auto condition = And(
-        And(And(And(And(MakeBinary(BinaryFunction::Equal, ColumnRef(table_schema_, "CounterID"),
-                                   MakeConst(static_cast<int64_t>(62))),
-                        MakeBinary(BinaryFunction::GreaterOrEqual,
-                                   ColumnRef(table_schema_, "EventDate"), DateConst("2013-07-01"))),
-                    MakeBinary(BinaryFunction::LessOrEqual, ColumnRef(table_schema_, "EventDate"),
-                               DateConst("2013-07-31"))),
-                MakeBinary(BinaryFunction::Equal, ColumnRef(table_schema_, "DontCountHits"),
-                           MakeConst(static_cast<int64_t>(0)))),
-            MakeBinary(BinaryFunction::Equal, ColumnRef(table_schema_, "IsRefresh"),
-                       MakeConst(static_cast<int64_t>(0)))),
-        NotEmpty(table_schema_, "URL"));
+    auto condition = AndAll({Eq(table_schema_, "CounterID", 62),
+                             DateBetween(table_schema_, "2013-07-01", "2013-07-31"),
+                             Eq(table_schema_, "DontCountHits", 0),
+                             Eq(table_schema_, "IsRefresh", 0), NotEmpty(table_schema_, "URL")});
     auto agg = MakeHashAggregation(MakeFilter(MakeScan(), std::move(condition)),
                                    ColumnRef(table_schema_, "URL"), "URL", {Count("PageViews")});
     return MakeTopN(std::move(agg),
@@ -634,18 +616,10 @@ std::shared_ptr<Operator> QueryMaker::MakeQ37() const {
     // WHERE CounterID = 62 AND EventDate >= '2013-07-01' AND EventDate <= '2013-07-31'
     // AND DontCountHits = 0 AND IsRefresh = 0 AND Title <> ''
     // GROUP BY Title ORDER BY PageViews DESC LIMIT 10;
-    auto condition = And(
-        And(And(And(And(MakeBinary(BinaryFunction::Equal, ColumnRef(table_schema_, "CounterID"),
-                                   MakeConst(static_cast<int64_t>(62))),
-                        MakeBinary(BinaryFunction::GreaterOrEqual,
-                                   ColumnRef(table_schema_, "EventDate"), DateConst("2013-07-01"))),
-                    MakeBinary(BinaryFunction::LessOrEqual, ColumnRef(table_schema_, "EventDate"),
-                               DateConst("2013-07-31"))),
-                MakeBinary(BinaryFunction::Equal, ColumnRef(table_schema_, "DontCountHits"),
-                           MakeConst(static_cast<int64_t>(0)))),
-            MakeBinary(BinaryFunction::Equal, ColumnRef(table_schema_, "IsRefresh"),
-                       MakeConst(static_cast<int64_t>(0)))),
-        NotEmpty(table_schema_, "Title"));
+    auto condition = AndAll({Eq(table_schema_, "CounterID", 62),
+                             DateBetween(table_schema_, "2013-07-01", "2013-07-31"),
+                             Eq(table_schema_, "DontCountHits", 0),
+                             Eq(table_schema_, "IsRefresh", 0), NotEmpty(table_schema_, "Title")});
     auto agg =
         MakeHashAggregation(MakeFilter(MakeScan(), std::move(condition)),
                             ColumnRef(table_schema_, "Title"), "Title", {Count("PageViews")});

@@ -95,6 +95,10 @@ bool IsComparisonFunction(BinaryFunction f) {
            f == BinaryFunction::Greater || f == BinaryFunction::GreaterOrEqual;
 }
 
+bool IsConstExpression(const Expression& expr) {
+    return expr.type == ExpressionType::ConstInt64 || expr.type == ExpressionType::ConstString;
+}
+
 BinaryFunction FlipComparison(BinaryFunction f) {
     switch (f) {
         case BinaryFunction::Less:
@@ -158,14 +162,11 @@ std::unique_ptr<core::Column> TryEvalConstCompare(const core::Batch& batch,
     const Expression* col_side = binary.lhs.get();
     const Expression* const_side = binary.rhs.get();
     bool flipped = false;
-    auto is_const = [](const Expression* e) {
-        return e->type == ExpressionType::ConstInt64 || e->type == ExpressionType::ConstString;
-    };
-    if (is_const(col_side)) {
+    if (IsConstExpression(*col_side)) {
         std::swap(col_side, const_side);
         flipped = true;
     }
-    if (!is_const(const_side) || is_const(col_side)) {
+    if (!IsConstExpression(*const_side) || IsConstExpression(*col_side)) {
         return nullptr;
     }
     auto op = flipped ? FlipComparison(binary.function) : binary.function;
@@ -225,7 +226,7 @@ void PrepareDictionaryTerm(ContainsTerm& term) {
     term.dict_matches.resize(term.dict_col->DictSize());
     for (uint32_t id = 0; id < term.dict_matches.size(); ++id) {
         bool found = term.dict_col->DictValue(id).find(term.substring) != std::string_view::npos;
-        term.dict_matches[id] = (term.negated ? !found : found) ? 1 : 0;
+        term.dict_matches[id] = (found != term.negated) ? 1 : 0;
     }
 }
 
@@ -302,8 +303,7 @@ bool TryCompileSimpleTerm(const core::Batch& batch, const Expression& expr,
     const Expression* col_side = binary.lhs.get();
     const Expression* const_side = binary.rhs.get();
     bool flipped = false;
-    if (col_side->type == ExpressionType::ConstInt64 ||
-        col_side->type == ExpressionType::ConstString) {
+    if (IsConstExpression(*col_side)) {
         std::swap(col_side, const_side);
         flipped = true;
     }
@@ -405,20 +405,12 @@ bool MatchesTerm(const PredicateTerm& term, size_t row) {
 std::vector<uint32_t> SelectionFromMask(const core::Batch& batch, const core::BoolColumn& mask) {
     std::vector<uint32_t> selection;
     selection.reserve(batch.SelectedRowsCount());
-    if (batch.HasSelection()) {
-        for (uint32_t row : batch.Selection()) {
-            if (!mask.IsNull(row) && mask.Get(row)) {
-                selection.push_back(row);
-            }
+    const std::vector<uint32_t>* input = batch.HasSelection() ? &batch.Selection() : nullptr;
+    ForSelectedRows(input, batch.RowsCount(), [&](size_t row) {
+        if (!mask.IsNull(row) && mask.Get(row)) {
+            selection.push_back(static_cast<uint32_t>(row));
         }
-    } else {
-        size_t rows = batch.RowsCount();
-        for (size_t row = 0; row < rows; ++row) {
-            if (!mask.IsNull(row) && mask.Get(row)) {
-                selection.push_back(static_cast<uint32_t>(row));
-            }
-        }
-    }
+    });
     return selection;
 }
 }  // namespace
@@ -558,13 +550,13 @@ std::vector<uint32_t> EvaluatePredicateSelection(const core::Batch& batch, const
     }
 
     std::vector<uint32_t> selection;
-    selection.reserve(batch.SelectedRowsCount());
     if (batch.HasSelection()) {
         selection = batch.Selection();
     } else {
         size_t rows = batch.RowsCount();
+        selection.resize(rows);
         for (size_t row = 0; row < rows; ++row) {
-            selection.push_back(static_cast<uint32_t>(row));
+            selection[row] = static_cast<uint32_t>(row);
         }
     }
 

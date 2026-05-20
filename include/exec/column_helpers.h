@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 namespace columnar::exec {
 template <typename V>
@@ -136,6 +137,20 @@ inline std::string_view ReadStringRow(const core::Column& col, size_t row) {
     }
     return static_cast<const core::StringColumn&>(col).Get(row);
 }
+
+template <typename F>
+void ForSelectedRows(const std::vector<uint32_t>* selection, size_t rows, F&& f) {
+    if (selection != nullptr) {
+        for (uint32_t row : *selection) {
+            f(static_cast<size_t>(row));
+        }
+    } else {
+        for (size_t row = 0; row < rows; ++row) {
+            f(row);
+        }
+    }
+}
+
 inline void AppendRow(core::Column& out, const core::Column& src, size_t row) {
     if (src.IsNull(row)) {
         out.AppendNull();

@@ -48,19 +48,6 @@ void HashCombine(size_t& seed, size_t value) noexcept {
     seed ^= value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
 }
 
-template <typename F>
-void ForSelectedRows(const std::vector<uint32_t>* selection, size_t rows, F&& f) {
-    if (selection != nullptr) {
-        for (uint32_t row : *selection) {
-            f(static_cast<size_t>(row));
-        }
-    } else {
-        for (size_t row = 0; row < rows; ++row) {
-            f(row);
-        }
-    }
-}
-
 bool RequiresDenseBatch(const std::vector<ProjectionUnit>& keys,
                         const std::vector<AggregationUnit>& aggregations) {
     for (auto& key : keys) {
@@ -284,15 +271,9 @@ size_t HashAggregationSink::Int64PairHash::operator()(const Int64Pair& key) cons
 
 HashAggregationSink::KeyMode HashAggregationSink::SelectKeyMode(
     const std::vector<ProjectionUnit>& keys) {
-    if (keys.size() == 2) {
-        auto first_type = GetExpressionType(*keys[0].expression);
-        auto second_type = GetExpressionType(*keys[1].expression);
-        if ((HasIntegerValue(first_type) || first_type == core::DataType::Timestamp ||
-             first_type == core::DataType::Date) &&
-            (HasIntegerValue(second_type) || second_type == core::DataType::Timestamp ||
-             second_type == core::DataType::Date)) {
-            return KeyMode::Int64Pair;
-        }
+    if (keys.size() == 2 && HasIntegerValue(GetExpressionType(*keys[0].expression)) &&
+        HasIntegerValue(GetExpressionType(*keys[1].expression))) {
+        return KeyMode::Int64Pair;
     }
     if (keys.size() != 1) {
         return KeyMode::Composite;
@@ -301,8 +282,7 @@ HashAggregationSink::KeyMode HashAggregationSink::SelectKeyMode(
     if (type == core::DataType::String) {
         return KeyMode::String;
     }
-    if (HasIntegerValue(type) || type == core::DataType::Timestamp ||
-        type == core::DataType::Date) {
+    if (HasIntegerValue(type)) {
         return KeyMode::Int64;
     }
     return KeyMode::Composite;
@@ -366,16 +346,17 @@ void HashAggregationSink::UpdateAggsForRow(uint32_t group_id,
                                            const std::vector<const core::Column*>& agg_cols,
                                            size_t row) {
     for (size_t i = 0; i < aggregations_.size(); ++i) {
-        switch (aggregations_[i].type) {
-            case AggregationType::Count: {
-                ++std::get<CountArray>(agg_arrays_[i]).values[group_id];
-                break;
-            }
+        auto type = aggregations_[i].type;
+        if (type == AggregationType::Count) {
+            ++std::get<CountArray>(agg_arrays_[i]).values[group_id];
+            continue;
+        }
+        const core::Column& col = *agg_cols[i];
+        if (col.IsNull(row)) {
+            continue;
+        }
+        switch (type) {
             case AggregationType::Sum: {
-                const core::Column& col = *agg_cols[i];
-                if (col.IsNull(row)) {
-                    break;
-                }
                 auto& array = std::get<SumArray>(agg_arrays_[i]);
                 array.has_value[group_id] = 1;
                 if (array.is_double) {
@@ -387,20 +368,12 @@ void HashAggregationSink::UpdateAggsForRow(uint32_t group_id,
                 break;
             }
             case AggregationType::Avg: {
-                const core::Column& col = *agg_cols[i];
-                if (col.IsNull(row)) {
-                    break;
-                }
                 auto& array = std::get<AvgArray>(agg_arrays_[i]);
                 array.int_sums[group_id] += static_cast<__int128>(ReadIntegerRow(col, row));
                 ++array.counts[group_id];
                 break;
             }
             case AggregationType::Distinct: {
-                const core::Column& col = *agg_cols[i];
-                if (col.IsNull(row)) {
-                    break;
-                }
                 auto& array = std::get<DistinctArray>(agg_arrays_[i]);
                 if (array.is_string) {
                     array.strings[group_id].emplace(ReadStringRow(col, row));
@@ -411,12 +384,8 @@ void HashAggregationSink::UpdateAggsForRow(uint32_t group_id,
             }
             case AggregationType::Min:
             case AggregationType::Max: {
-                const core::Column& col = *agg_cols[i];
-                if (col.IsNull(row)) {
-                    break;
-                }
                 auto& array = std::get<MinMaxArray>(agg_arrays_[i]);
-                bool is_min = aggregations_[i].type == AggregationType::Min;
+                bool is_min = type == AggregationType::Min;
                 uint8_t& has_value = array.has_value[group_id];
                 if (array.value_type == core::DataType::String) {
                     auto value = ReadStringRow(col, row);
@@ -442,6 +411,8 @@ void HashAggregationSink::UpdateAggsForRow(uint32_t group_id,
                 }
                 break;
             }
+            default:
+                THROW_RUNTIME_ERROR("Unsupported aggregate type");
         }
     }
 }

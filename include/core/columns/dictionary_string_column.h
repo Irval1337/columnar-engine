@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -87,6 +88,7 @@ public:
         dict_offsets_.push_back(0);
         ids_.clear();
         is_null_.Clear();
+        empty_id_ = kNoEmptyId;
     }
 
     std::string_view Get(size_t i) const {
@@ -177,16 +179,26 @@ private:
     }
 
     uint32_t EnsureEmptyValue() {
-        if (DictSize() > 0 && dict_offsets_[0] == 0 && dict_offsets_[1] == 0) {
-            return 0;
+        if (empty_id_ != kNoEmptyId) {
+            return empty_id_;
         }
-        return AppendDictValue("");
+        for (uint32_t id = 0; id < DictSize(); ++id) {
+            if (dict_offsets_[id + 1] == dict_offsets_[id]) {
+                empty_id_ = id;
+                return id;
+            }
+        }
+        empty_id_ = AppendDictValue("");
+        return empty_id_;
     }
+
+    static constexpr uint32_t kNoEmptyId = std::numeric_limits<uint32_t>::max();
 
     std::vector<char> dict_data_;
     std::vector<size_t> dict_offsets_;
     std::vector<uint32_t> ids_;
     bool nullable_ = false;
     util::BitVector is_null_;
+    uint32_t empty_id_ = kNoEmptyId;
 };
 }  // namespace columnar::core

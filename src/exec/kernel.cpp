@@ -39,31 +39,18 @@ const core::DictionaryStringColumn* AsDictionaryString(const core::Column& col) 
     return dynamic_cast<const core::DictionaryStringColumn*>(&col);
 }
 
-template <typename F>
-void ForLogicalRows(const std::vector<uint32_t>* selection, size_t rows, F&& f) {
-    if (selection != nullptr) {
-        for (uint32_t i : *selection) {
-            f(static_cast<size_t>(i));
-        }
-    } else {
-        for (size_t i = 0; i < rows; ++i) {
-            f(i);
-        }
-    }
-}
-
 template <typename Col, typename F>
 void ForEachNonNull(const Col& col, const std::vector<uint32_t>* selection, F&& f) {
     const auto& data = col.GetData();
     if (col.IsNullable()) {
         const auto& mask = col.GetNullMask();
-        ForLogicalRows(selection, data.size(), [&](size_t i) {
+        ForSelectedRows(selection, data.size(), [&](size_t i) {
             if (!mask.Get(i)) {
                 f(data[i]);
             }
         });
     } else {
-        ForLogicalRows(selection, data.size(), [&](size_t i) { f(data[i]); });
+        ForSelectedRows(selection, data.size(), [&](size_t i) { f(data[i]); });
     }
 }
 
@@ -71,13 +58,13 @@ template <typename F>
 void ForEachNonNull(const core::BoolColumn& col, const std::vector<uint32_t>* selection, F&& f) {
     if (col.IsNullable()) {
         const auto& mask = col.GetNullMask();
-        ForLogicalRows(selection, col.Size(), [&](size_t i) {
+        ForSelectedRows(selection, col.Size(), [&](size_t i) {
             if (!mask.Get(i)) {
                 f(col.Get(i));
             }
         });
     } else {
-        ForLogicalRows(selection, col.Size(), [&](size_t i) { f(col.Get(i)); });
+        ForSelectedRows(selection, col.Size(), [&](size_t i) { f(col.Get(i)); });
     }
 }
 
@@ -187,10 +174,9 @@ std::unique_ptr<core::Column> CompareDispatch(const core::Column& lhs, const cor
     return CompareIntegers(lhs, rhs, cmp);
 }
 
-enum class ArithmeticOp { Add, Subtract, Multiply };
-
-std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core::Column& rhs,
-                                            ArithmeticOp op) {
+template <typename Op>
+std::unique_ptr<core::Column> ArithmeticIntImpl(const core::Column& lhs, const core::Column& rhs,
+                                                Op op) {
     size_t rows = lhs.Size();
     if (rhs.Size() != rows) {
         THROW_RUNTIME_ERROR("Arithmetic: row count mismatch");
@@ -204,15 +190,8 @@ std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core:
             const util::BitVector* rmask = r.IsNullable() ? &r.GetNullMask() : nullptr;
             if (lmask == nullptr && rmask == nullptr) {
                 for (size_t i = 0; i < rows; ++i) {
-                    auto a = static_cast<int64_t>(ReadTypedValue(l, i));
-                    auto b = static_cast<int64_t>(ReadTypedValue(r, i));
-                    if (op == ArithmeticOp::Add) {
-                        data[i] = a + b;
-                    } else if (op == ArithmeticOp::Subtract) {
-                        data[i] = a - b;
-                    } else {
-                        data[i] = a * b;
-                    }
+                    data[i] = op(static_cast<int64_t>(ReadTypedValue(l, i)),
+                                 static_cast<int64_t>(ReadTypedValue(r, i)));
                 }
                 return;
             }
@@ -221,15 +200,8 @@ std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core:
                     mask.Set(i);
                     continue;
                 }
-                auto a = static_cast<int64_t>(ReadTypedValue(l, i));
-                auto b = static_cast<int64_t>(ReadTypedValue(r, i));
-                if (op == ArithmeticOp::Add) {
-                    data[i] = a + b;
-                } else if (op == ArithmeticOp::Subtract) {
-                    data[i] = a - b;
-                } else {
-                    data[i] = a * b;
-                }
+                data[i] = op(static_cast<int64_t>(ReadTypedValue(l, i)),
+                             static_cast<int64_t>(ReadTypedValue(r, i)));
             }
         });
     });
@@ -445,22 +417,25 @@ std::unique_ptr<core::Column> GreaterOrEqualConstString(const core::Column& col,
                               [](std::string_view a, std::string_view b) { return a >= b; });
 }
 
-std::unique_ptr<core::Column> And(const core::Column& lhs, const core::Column& rhs) {
+namespace {
+template <typename Op>
+std::unique_ptr<core::Column> BoolBinaryImpl(const core::Column& lhs, const core::Column& rhs,
+                                             const char* name, Op op) {
     if (lhs.GetDataType() != core::DataType::Bool || rhs.GetDataType() != core::DataType::Bool) {
-        THROW_RUNTIME_ERROR("AND operands must be boolean");
+        THROW_RUNTIME_ERROR(std::string(name) + " operands must be boolean");
     }
     auto& l = static_cast<const core::BoolColumn&>(lhs);
     auto& r = static_cast<const core::BoolColumn&>(rhs);
     size_t rows = l.Size();
     if (r.Size() != rows) {
-        THROW_RUNTIME_ERROR("AND: row count mismatch");
+        THROW_RUNTIME_ERROR(std::string(name) + ": row count mismatch");
     }
     const auto& ld = l.GetData();
     const auto& rd = r.GetData();
     auto out = MakeBoolColumn(rows);
     if (!l.IsNullable() && !r.IsNullable()) {
         for (size_t i = 0; i < rows; ++i) {
-            out->Append(ld.Get(i) && rd.Get(i));
+            out->Append(op(ld.Get(i), rd.Get(i)));
         }
         return out;
     }
@@ -469,50 +444,30 @@ std::unique_ptr<core::Column> And(const core::Column& lhs, const core::Column& r
     for (size_t i = 0; i < rows; ++i) {
         bool lv = ld.Get(i) && !(lmask && lmask->Get(i));
         bool rv = rd.Get(i) && !(rmask && rmask->Get(i));
-        out->Append(lv && rv);
+        out->Append(op(lv, rv));
     }
     return out;
+}
+}  // namespace
+
+std::unique_ptr<core::Column> And(const core::Column& lhs, const core::Column& rhs) {
+    return BoolBinaryImpl(lhs, rhs, "AND", [](bool a, bool b) { return a && b; });
 }
 
 std::unique_ptr<core::Column> Or(const core::Column& lhs, const core::Column& rhs) {
-    if (lhs.GetDataType() != core::DataType::Bool || rhs.GetDataType() != core::DataType::Bool) {
-        THROW_RUNTIME_ERROR("OR operands must be boolean");
-    }
-    auto& l = static_cast<const core::BoolColumn&>(lhs);
-    auto& r = static_cast<const core::BoolColumn&>(rhs);
-    size_t rows = l.Size();
-    if (r.Size() != rows) {
-        THROW_RUNTIME_ERROR("OR: row count mismatch");
-    }
-    const auto& ld = l.GetData();
-    const auto& rd = r.GetData();
-    auto out = MakeBoolColumn(rows);
-    if (!l.IsNullable() && !r.IsNullable()) {
-        for (size_t i = 0; i < rows; ++i) {
-            out->Append(ld.Get(i) || rd.Get(i));
-        }
-        return out;
-    }
-    const util::BitVector* lmask = l.IsNullable() ? &l.GetNullMask() : nullptr;
-    const util::BitVector* rmask = r.IsNullable() ? &r.GetNullMask() : nullptr;
-    for (size_t i = 0; i < rows; ++i) {
-        bool lv = ld.Get(i) && !(lmask && lmask->Get(i));
-        bool rv = rd.Get(i) && !(rmask && rmask->Get(i));
-        out->Append(lv || rv);
-    }
-    return out;
+    return BoolBinaryImpl(lhs, rhs, "OR", [](bool a, bool b) { return a || b; });
 }
 
 std::unique_ptr<core::Column> Add(const core::Column& lhs, const core::Column& rhs) {
-    return ArithmeticInt(lhs, rhs, ArithmeticOp::Add);
+    return ArithmeticIntImpl(lhs, rhs, [](int64_t a, int64_t b) { return a + b; });
 }
 
 std::unique_ptr<core::Column> Subtract(const core::Column& lhs, const core::Column& rhs) {
-    return ArithmeticInt(lhs, rhs, ArithmeticOp::Subtract);
+    return ArithmeticIntImpl(lhs, rhs, [](int64_t a, int64_t b) { return a - b; });
 }
 
 std::unique_ptr<core::Column> Multiply(const core::Column& lhs, const core::Column& rhs) {
-    return ArithmeticInt(lhs, rhs, ArithmeticOp::Multiply);
+    return ArithmeticIntImpl(lhs, rhs, [](int64_t a, int64_t b) { return a * b; });
 }
 
 std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::string_view substring,
@@ -524,7 +479,7 @@ std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::stri
         std::vector<uint8_t> dict_results(dict->DictSize(), 0);
         for (uint32_t id = 0; id < dict_results.size(); ++id) {
             bool found = dict->DictValue(id).find(substring) != std::string_view::npos;
-            dict_results[id] = (negated ? !found : found) ? 1 : 0;
+            dict_results[id] = (found != negated) ? 1 : 0;
         }
         size_t rows = dict->Size();
         auto out = MakeBoolColumn(rows);
@@ -542,7 +497,7 @@ std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::stri
             continue;
         }
         bool found = s.Get(i).find(substring) != std::string_view::npos;
-        out->Append(negated ? !found : found);
+        out->Append(found != negated);
     }
     return out;
 }
@@ -763,7 +718,7 @@ ScalarReduction<std::string> MinMaxStringImpl(const core::Column& col,
         THROW_RUNTIME_ERROR("MIN/MAX string: not a string column");
     }
     ScalarReduction<std::string> r;
-    ForLogicalRows(selection, col.Size(), [&](size_t i) {
+    ForSelectedRows(selection, col.Size(), [&](size_t i) {
         if (col.IsNull(i)) {
             return;
         }
@@ -805,7 +760,7 @@ uint64_t CountNonNull(const core::Column& col, const std::vector<uint32_t>* sele
         return selection != nullptr ? selection->size() : col.Size();
     }
     uint64_t c = 0;
-    ForLogicalRows(selection, col.Size(), [&](size_t i) {
+    ForSelectedRows(selection, col.Size(), [&](size_t i) {
         if (!col.IsNull(i)) {
             ++c;
         }
@@ -825,7 +780,7 @@ void DistinctStrings(const core::Column& col, std::unordered_set<std::string>& o
     if (col.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("DistinctStrings: not a string column");
     }
-    ForLogicalRows(selection, col.Size(), [&](size_t i) {
+    ForSelectedRows(selection, col.Size(), [&](size_t i) {
         if (!col.IsNull(i)) {
             out.emplace(ReadStringRow(col, i));
         }
