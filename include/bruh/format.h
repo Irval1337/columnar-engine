@@ -20,7 +20,7 @@
 // My amazing DB uses ONLY little-endian bytes ordering
 namespace columnar::bruh {
 constexpr uint8_t kMagicBytes[8] = {'B', 'R', 'U', 'H', 'D', 'B', 0x67, 0x67};
-constexpr int kCurrentVersion = 6;
+constexpr int kCurrentVersion = 7;
 
 struct ColumnChunkStatistics {
     bool present = false;

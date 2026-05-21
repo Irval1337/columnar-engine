@@ -9,6 +9,7 @@
 #include <exec/kernel.h>
 #include <util/macro.h>
 
+#include <algorithm>
 #include <cassert>
 #include <functional>
 #include <limits>
@@ -342,6 +343,43 @@ uint32_t HashAggregationSink::EmplaceGroup() {
     return group_id;
 }
 
+void HashAggregationSink::ReserveStringGroupsForBatch(size_t selected_rows,
+                                                      size_t max_new_groups) {
+    if (selected_rows == 0 || max_new_groups == 0) {
+        return;
+    }
+
+    size_t expected_new_groups = max_new_groups;
+    if (input_rows_seen_ != 0) {
+        long double groups_per_row =
+            static_cast<long double>(groups_count_) / static_cast<long double>(input_rows_seen_);
+        expected_new_groups =
+            static_cast<size_t>(static_cast<long double>(selected_rows) * groups_per_row * 1.25L) +
+            1;
+        expected_new_groups = std::min(expected_new_groups, max_new_groups);
+    }
+
+    size_t target_groups = static_cast<size_t>(groups_count_) + expected_new_groups;
+    if (target_groups <= reserved_groups_) {
+        return;
+    }
+
+    size_t reserve_groups = target_groups;
+    if (reserved_groups_ != 0) {
+        reserve_groups = reserved_groups_;
+        while (reserve_groups < target_groups) {
+            reserve_groups += std::max<size_t>(reserve_groups / 2, 1024);
+        }
+    }
+
+    reserved_groups_ = reserve_groups;
+    for (auto& array : agg_arrays_) {
+        std::visit([&](auto& typed) { typed.Reserve(reserve_groups); }, array);
+    }
+    string_groups_.reserve(reserve_groups);
+    string_group_keys_.reserve(reserve_groups);
+}
+
 void HashAggregationSink::UpdateAggsForRow(uint32_t group_id,
                                            const std::vector<const core::Column*>& agg_cols,
                                            size_t row) {
@@ -614,6 +652,7 @@ void HashAggregationSink::Consume(core::Batch batch) {
         batch = kernel::Materialize(batch);
         rows = batch.RowsCount();
     }
+    size_t selected_rows = batch.SelectedRowsCount();
 
     std::vector<EvalResult> key_evals;
     key_evals.reserve(keys_.size());
@@ -636,21 +675,28 @@ void HashAggregationSink::Consume(core::Batch batch) {
     }
 
     const std::vector<uint32_t>* selection = batch.HasSelection() ? &batch.Selection() : nullptr;
+    if (mode_ == KeyMode::String) {
+        if (auto* dict = dynamic_cast<const core::DictionaryStringColumn*>(key_cols[0])) {
+            ReserveStringGroupsForBatch(selected_rows,
+                                        std::min(selected_rows, dict->DictSize()));
+        }
+    }
 
     switch (mode_) {
         case KeyMode::Int64:
             ConsumeInt64(*key_cols[0], agg_cols, selection, rows);
-            return;
+            break;
         case KeyMode::String:
             ConsumeString(*key_cols[0], agg_cols, selection, rows);
-            return;
+            break;
         case KeyMode::Int64Pair:
             ConsumeInt64Pair(*key_cols[0], *key_cols[1], agg_cols, selection, rows);
-            return;
+            break;
         case KeyMode::Composite:
             ConsumeComposite(key_cols, agg_cols, selection, rows);
-            return;
+            break;
     }
+    input_rows_seen_ += selected_rows;
 }
 
 void HashAggregationSink::Finalize() {

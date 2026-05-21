@@ -75,6 +75,10 @@ private:
     struct CountArray {
         std::vector<int64_t> values;
 
+        void Reserve(size_t n) {
+            values.reserve(n);
+        }
+
         void PushDefault() {
             values.push_back(0);
         }
@@ -85,6 +89,15 @@ private:
         std::vector<uint8_t> has_value;
         std::vector<int64_t> int_values;
         std::vector<long double> double_values;
+
+        void Reserve(size_t n) {
+            has_value.reserve(n);
+            if (is_double) {
+                double_values.reserve(n);
+            } else {
+                int_values.reserve(n);
+            }
+        }
 
         void PushDefault() {
             has_value.push_back(0);
@@ -100,6 +113,11 @@ private:
         std::vector<__int128> int_sums;
         std::vector<uint64_t> counts;
 
+        void Reserve(size_t n) {
+            int_sums.reserve(n);
+            counts.reserve(n);
+        }
+
         void PushDefault() {
             int_sums.push_back(0);
             counts.push_back(0);
@@ -112,6 +130,17 @@ private:
         std::vector<int64_t> int_values;
         std::vector<double> double_values;
         std::vector<std::string> string_values;
+
+        void Reserve(size_t n) {
+            has_value.reserve(n);
+            if (value_type == core::DataType::String) {
+                string_values.reserve(n);
+            } else if (value_type == core::DataType::Double) {
+                double_values.reserve(n);
+            } else {
+                int_values.reserve(n);
+            }
+        }
 
         void PushDefault() {
             has_value.push_back(0);
@@ -129,6 +158,14 @@ private:
         bool is_string = false;
         std::vector<std::unordered_set<int64_t>> ints;
         std::vector<std::unordered_set<std::string>> strings;
+
+        void Reserve(size_t n) {
+            if (is_string) {
+                strings.reserve(n);
+            } else {
+                ints.reserve(n);
+            }
+        }
 
         void PushDefault() {
             if (is_string) {
@@ -215,6 +252,7 @@ private:
     static KeyMode SelectKeyMode(const std::vector<ProjectionUnit>& keys);
 
     uint32_t EmplaceGroup();
+    void ReserveStringGroupsForBatch(size_t selected_rows, size_t max_new_groups);
 
     void UpdateAggsForRow(uint32_t group_id, const std::vector<const core::Column*>& agg_cols,
                           size_t row);
@@ -243,6 +281,8 @@ private:
     KeyMode mode_;
     bool needs_dense_;
     uint32_t groups_count_ = 0;
+    size_t input_rows_seen_ = 0;
+    size_t reserved_groups_ = 0;
     std::vector<AggArray> agg_arrays_;
     std::vector<int64_t> int64_group_keys_;
     std::vector<std::string> string_group_keys_;
