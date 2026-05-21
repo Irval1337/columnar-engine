@@ -5,8 +5,10 @@
 #include <core/columns/timestamp_column.h>
 #include <exec/clickbench.h>
 #include <exec/kernel.h>
+#include <exec/metadata_pruning.h>
 #include <exec/operator.h>
 
+#include <cmath>
 #include <cstring>
 #include <set>
 #include <memory>
@@ -284,6 +286,61 @@ TEST(Execution, FilterSkipsRowGroupsByStatistics) {
     auto batches = exec::Execute(reader, exec::MakeFilter(exec::MakeScan(), std::move(condition)));
 
     EXPECT_EQ(TotalRows(batches), 2);
+}
+
+TEST(Execution, PredicateMayMatchDoesNotPruneNaNChunk) {
+    core::Schema schema({core::Field("x", core::DataType::Double, true)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhWriterOptions options;
+        options.compression = util::Compression::None;
+        options.encoding = core::Encoding::Plain;
+        bruh::BruhBatchWriter writer(ss, schema, options);
+
+        core::Batch with_nan(schema);
+        with_nan.ColumnAt(0).AppendFromString(std::to_string(std::nan("")));
+        with_nan.ColumnAt(0).AppendFromString("5");
+        writer.Write(with_nan);
+        writer.Flush();
+    }
+
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+    auto condition = exec::MakeBinary(exec::BinaryFunction::Equal,
+                                      exec::MakeColumnExpr("x", core::DataType::Double),
+                                      exec::MakeConst(static_cast<int64_t>(5)));
+
+    EXPECT_TRUE(exec::PredicateMayMatch(reader, 0, *condition));
+
+    auto& stats = reader.GetColumnStatistics(0, 0);
+    EXPECT_TRUE(stats.has_min_max);
+    EXPECT_DOUBLE_EQ(stats.min_double, 5.0);
+    EXPECT_DOUBLE_EQ(stats.max_double, 5.0);
+}
+
+TEST(Execution, PredicateMayMatchPrunesAllNullChunk) {
+    core::Schema schema({core::Field("x", core::DataType::Int64, true)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhWriterOptions options;
+        options.compression = util::Compression::None;
+        options.encoding = core::Encoding::Plain;
+        bruh::BruhBatchWriter writer(ss, schema, options);
+
+        core::Batch all_null(schema);
+        all_null.ColumnAt(0).AppendNull();
+        all_null.ColumnAt(0).AppendNull();
+        writer.Write(all_null);
+        writer.Flush();
+    }
+
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+    auto condition = exec::MakeBinary(exec::BinaryFunction::Equal,
+                                      exec::MakeColumnExpr("x", core::DataType::Int64),
+                                      exec::MakeConst(static_cast<int64_t>(5)));
+
+    EXPECT_FALSE(exec::PredicateMayMatch(reader, 0, *condition));
 }
 
 TEST(ClickBenchQueries, CountStar) {

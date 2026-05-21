@@ -61,12 +61,20 @@ void UpdateMinMax(T value, T& mn, T& mx, bool& first) {
 }
 
 template <typename ColumnT>
-ColumnChunkStatistics BuildIntStatistics(const core::Column& col) {
+ColumnChunkStatistics BuildIntStatistics(const core::Column& col,
+                                         const core::encoding::AutoEncoding& auto_encoding) {
     auto& numeric = static_cast<const ColumnT&>(col);
     ColumnChunkStatistics statistics;
     statistics.present = true;
     if (numeric.IsNullable()) {
         statistics.nulls_count = numeric.GetNullMask().PopCount();
+    }
+
+    if (statistics.nulls_count == 0 && auto_encoding.has_int_stats && numeric.Size() > 0) {
+        statistics.has_min_max = true;
+        statistics.min_int = auto_encoding.mn;
+        statistics.max_int = auto_encoding.mx;
+        return statistics;
     }
 
     int64_t mn = 0;
@@ -101,8 +109,7 @@ ColumnChunkStatistics BuildDoubleStatistics(const core::Column& col) {
         }
         double value = numeric.Get(i);
         if (std::isnan(value)) {
-            statistics.has_min_max = false;
-            return statistics;
+            continue;
         }
         UpdateMinMax(value, mn, mx, first);
     }
@@ -198,14 +205,15 @@ ColumnChunkStatistics BuildStringStatistics(const core::Column& col) {
     return statistics;
 }
 
-ColumnChunkStatistics BuildStatistics(const core::Column& col, const core::Field& field) {
+ColumnChunkStatistics BuildStatistics(const core::Column& col, const core::Field& field,
+                                      const core::encoding::AutoEncoding& auto_encoding) {
     switch (core::DataTypeToPhysical(field.type)) {
         case core::PhysicalType::Int16:
-            return BuildIntStatistics<core::Int16Column>(col);
+            return BuildIntStatistics<core::Int16Column>(col, auto_encoding);
         case core::PhysicalType::Int32:
-            return BuildIntStatistics<core::Int32Column>(col);
+            return BuildIntStatistics<core::Int32Column>(col, auto_encoding);
         case core::PhysicalType::Int64:
-            return BuildIntStatistics<core::Int64Column>(col);
+            return BuildIntStatistics<core::Int64Column>(col, auto_encoding);
         case core::PhysicalType::Double:
             return BuildDoubleStatistics(col);
         case core::PhysicalType::Bool:
@@ -484,8 +492,6 @@ void BruhBatchWriter::Write(const core::Batch& batch) {
 
 void BruhBatchWriter::WriteColumn(ColumnChunkMetaData& chunk, const core::Column& col,
                                   const core::Field& field, size_t col_index) {
-    chunk.statistics = BuildStatistics(col, field);
-
     core::Encoding encoding = options_.encoding;
     if (auto it = options_.column_encoding.find(col_index); it != options_.column_encoding.end()) {
         encoding = it->second;
@@ -495,6 +501,8 @@ void BruhBatchWriter::WriteColumn(ColumnChunkMetaData& chunk, const core::Column
         auto_encoding = core::encoding::SelectEncoding(col, field);
         encoding = auto_encoding.encoding;
     }
+
+    chunk.statistics = BuildStatistics(col, field, auto_encoding);
 
     util::Compression compression = options_.compression;
     if (auto it = options_.column_compression.find(col_index);
