@@ -27,7 +27,8 @@ void CSVBatchWriter::Write(const core::Batch& batch) {
                 continue;
             }
             if (view.type == core::DataType::String) {
-                auto value = static_cast<const core::StringColumn*>(view.column)->Get(row);
+                std::string value;
+                view.column->AppendToString(row, value);
                 if (value.empty() && view.nullable) {
                     line_buf_ += options_.quote_char;
                     line_buf_ += options_.quote_char;

@@ -17,8 +17,9 @@ void EncodeStringDictionary(util::BufWriter& w, const std::vector<std::string_vi
                             const std::vector<uint32_t>& indexes);
 
 struct DecodedStringDictionary {
-    std::vector<char> data;
-    std::vector<size_t> offsets;
+    std::vector<char> dict_data;
+    std::vector<size_t> dict_offsets;
+    std::vector<uint32_t> ids;
 };
 
 DecodedStringDictionary DecodeStringDictionary(util::BufReader& r, size_t n);

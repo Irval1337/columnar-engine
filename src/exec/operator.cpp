@@ -5,6 +5,7 @@
 #include <exec/global_aggregate_operator.h>
 #include <exec/hash_aggregate_operator.h>
 #include <exec/kernel.h>
+#include <exec/metadata_pruning.h>
 #include <exec/project_operator.h>
 #include <exec/topn_operator.h>
 #include <util/macro.h>
@@ -102,16 +103,34 @@ core::Batch MakeCountBatch(const CountTableOperator& op, uint64_t rows) {
     return batch;
 }
 
+void ExecuteScanInto(bruh::BruhBatchReader& reader, const ScanOperator& scan,
+                     IOperator& downstream) {
+    auto column_indexes = reader.ResolveColumnNames(ScanColumnNames(scan));
+    for (size_t group = 0; group < reader.NumRowGroups(); ++group) {
+        downstream.Consume(reader.ReadRowGroup(group, column_indexes));
+    }
+    downstream.Finalize();
+}
+
+void ExecuteFilterScanInto(bruh::BruhBatchReader& reader, const ScanOperator& scan,
+                           const std::shared_ptr<Expression>& condition, IOperator& downstream) {
+    auto column_indexes = reader.ResolveColumnNames(ScanColumnNames(scan));
+    FilterSink sink(downstream, condition);
+    for (size_t group = 0; group < reader.NumRowGroups(); ++group) {
+        if (!PredicateMayMatch(reader, group, *condition)) {
+            continue;
+        }
+        sink.Consume(reader.ReadRowGroup(group, column_indexes));
+    }
+    sink.Finalize();
+}
+
 void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>& op,
                  IOperator& downstream) {
     switch (op->type) {
         case OperatorType::Scan: {
             auto& scan = As<ScanOperator>(op);
-            auto column_indexes = reader.ResolveColumnNames(ScanColumnNames(scan));
-            for (size_t group = 0; group < reader.NumRowGroups(); ++group) {
-                downstream.Consume(reader.ReadRowGroup(group, column_indexes));
-            }
-            downstream.Finalize();
+            ExecuteScanInto(reader, scan, downstream);
             return;
         }
         case OperatorType::CountTable: {
@@ -133,6 +152,11 @@ void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>&
         }
         case OperatorType::Filter: {
             auto& filter = As<FilterOperator>(op);
+            if (filter.child->type == OperatorType::Scan) {
+                ExecuteFilterScanInto(reader, As<ScanOperator>(filter.child), filter.condition,
+                                      downstream);
+                return;
+            }
             FilterSink sink(downstream, filter.condition);
             ExecuteInto(reader, filter.child, sink);
             return;

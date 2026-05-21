@@ -1,4 +1,8 @@
 #include <bruh/bruh_batch_writer.h>
+#include <core/columns/bool_column.h>
+#include <core/columns/char_column.h>
+#include <core/columns/dictionary_string_column.h>
+#include <core/columns/string_column.h>
 #include <core/encoding/auto_select.h>
 #include <core/encoding/bit_packing.h>
 #include <core/encoding/delta.h>
@@ -11,8 +15,11 @@
 #include <util/stream_helper.h>
 
 #include <cstdint>
+#include <cmath>
 #include <limits>
+#include <string_view>
 #include <type_traits>
+#include <vector>
 
 namespace columnar::bruh {
 namespace {
@@ -35,6 +42,188 @@ void ValidateSchema(const core::Schema& writer_schema, const core::Schema& batch
             THROW_RUNTIME_ERROR("Batch schema does not match writer schema");
         }
     }
+}
+
+template <typename T>
+void UpdateMinMax(T value, T& mn, T& mx, bool& first) {
+    if (first) {
+        mn = value;
+        mx = value;
+        first = false;
+        return;
+    }
+    if (value < mn) {
+        mn = value;
+    }
+    if (value > mx) {
+        mx = value;
+    }
+}
+
+template <typename ColumnT>
+ColumnChunkStatistics BuildIntStatistics(const core::Column& col,
+                                         const core::encoding::AutoEncoding& auto_encoding) {
+    auto& numeric = static_cast<const ColumnT&>(col);
+    ColumnChunkStatistics statistics;
+    statistics.present = true;
+    if (numeric.IsNullable()) {
+        statistics.nulls_count = numeric.GetNullMask().PopCount();
+    }
+
+    if (statistics.nulls_count == 0 && auto_encoding.has_int_stats && numeric.Size() > 0) {
+        statistics.has_min_max = true;
+        statistics.min_int = auto_encoding.mn;
+        statistics.max_int = auto_encoding.mx;
+        return statistics;
+    }
+
+    int64_t mn = 0;
+    int64_t mx = 0;
+    bool first = true;
+    for (size_t i = 0; i < numeric.Size(); ++i) {
+        if (numeric.IsNull(i)) {
+            continue;
+        }
+        UpdateMinMax(static_cast<int64_t>(numeric.Get(i)), mn, mx, first);
+    }
+    statistics.has_min_max = !first;
+    statistics.min_int = mn;
+    statistics.max_int = mx;
+    return statistics;
+}
+
+ColumnChunkStatistics BuildDoubleStatistics(const core::Column& col) {
+    auto& numeric = static_cast<const core::DoubleColumn&>(col);
+    ColumnChunkStatistics statistics;
+    statistics.present = true;
+    if (numeric.IsNullable()) {
+        statistics.nulls_count = numeric.GetNullMask().PopCount();
+    }
+
+    double mn = 0;
+    double mx = 0;
+    bool first = true;
+    for (size_t i = 0; i < numeric.Size(); ++i) {
+        if (numeric.IsNull(i)) {
+            continue;
+        }
+        double value = numeric.Get(i);
+        if (std::isnan(value)) {
+            continue;
+        }
+        UpdateMinMax(value, mn, mx, first);
+    }
+    statistics.has_min_max = !first;
+    statistics.min_double = mn;
+    statistics.max_double = mx;
+    return statistics;
+}
+
+ColumnChunkStatistics BuildBoolStatistics(const core::Column& col) {
+    auto& bool_col = static_cast<const core::BoolColumn&>(col);
+    ColumnChunkStatistics statistics;
+    statistics.present = true;
+    if (bool_col.IsNullable()) {
+        statistics.nulls_count = bool_col.GetNullMask().PopCount();
+    }
+
+    int64_t mn = 0;
+    int64_t mx = 0;
+    bool first = true;
+    for (size_t i = 0; i < bool_col.Size(); ++i) {
+        if (bool_col.IsNull(i)) {
+            continue;
+        }
+        UpdateMinMax(static_cast<int64_t>(bool_col.Get(i) ? 1 : 0), mn, mx, first);
+    }
+    statistics.has_min_max = !first;
+    statistics.min_int = mn;
+    statistics.max_int = mx;
+    return statistics;
+}
+
+ColumnChunkStatistics BuildCharStatistics(const core::Column& col) {
+    auto& char_col = static_cast<const core::CharColumn&>(col);
+    ColumnChunkStatistics statistics;
+    statistics.present = true;
+    if (char_col.IsNullable()) {
+        statistics.nulls_count = char_col.GetNullMask().PopCount();
+    }
+
+    int64_t mn = 0;
+    int64_t mx = 0;
+    bool first = true;
+    for (size_t i = 0; i < char_col.Size(); ++i) {
+        if (char_col.IsNull(i)) {
+            continue;
+        }
+        UpdateMinMax(static_cast<int64_t>(char_col.Get(i)), mn, mx, first);
+    }
+    statistics.has_min_max = !first;
+    statistics.min_int = mn;
+    statistics.max_int = mx;
+    return statistics;
+}
+
+std::string_view ReadString(const core::Column& col, size_t row) {
+    if (auto* string_col = dynamic_cast<const core::StringColumn*>(&col)) {
+        return string_col->Get(row);
+    }
+    if (auto* dict_col = dynamic_cast<const core::DictionaryStringColumn*>(&col)) {
+        return dict_col->Get(row);
+    }
+    THROW_RUNTIME_ERROR("Expected string column");
+}
+
+ColumnChunkStatistics BuildStringStatistics(const core::Column& col) {
+    ColumnChunkStatistics statistics;
+    statistics.present = true;
+    if (col.IsNullable()) {
+        if (auto* string_col = dynamic_cast<const core::StringColumn*>(&col)) {
+            statistics.nulls_count = string_col->GetNullMask().PopCount();
+        } else {
+            auto& dict_col = static_cast<const core::DictionaryStringColumn&>(col);
+            statistics.nulls_count = dict_col.GetNullMask().PopCount();
+        }
+    }
+
+    std::string_view mn;
+    std::string_view mx;
+    bool first = true;
+    for (size_t i = 0; i < col.Size(); ++i) {
+        if (col.IsNull(i)) {
+            continue;
+        }
+        auto value = ReadString(col, i);
+        UpdateMinMax(value, mn, mx, first);
+    }
+    statistics.has_min_max = !first;
+    if (statistics.has_min_max) {
+        statistics.min_string.assign(mn.data(), mn.size());
+        statistics.max_string.assign(mx.data(), mx.size());
+    }
+    return statistics;
+}
+
+ColumnChunkStatistics BuildStatistics(const core::Column& col, const core::Field& field,
+                                      const core::encoding::AutoEncoding& auto_encoding) {
+    switch (core::DataTypeToPhysical(field.type)) {
+        case core::PhysicalType::Int16:
+            return BuildIntStatistics<core::Int16Column>(col, auto_encoding);
+        case core::PhysicalType::Int32:
+            return BuildIntStatistics<core::Int32Column>(col, auto_encoding);
+        case core::PhysicalType::Int64:
+            return BuildIntStatistics<core::Int64Column>(col, auto_encoding);
+        case core::PhysicalType::Double:
+            return BuildDoubleStatistics(col);
+        case core::PhysicalType::Bool:
+            return BuildBoolStatistics(col);
+        case core::PhysicalType::String:
+            return BuildStringStatistics(col);
+        case core::PhysicalType::Char:
+            return BuildCharStatistics(col);
+    }
+    THROW_RUNTIME_ERROR("Unsupported type");
 }
 
 template <typename T>
@@ -151,24 +340,51 @@ void EncodeBool(util::BufWriter& w, const core::Column& col, bool nullable,
 
 void EncodeString(util::BufWriter& w, const core::Column& col, bool nullable,
                   core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding) {
-    auto& stringcol = static_cast<const core::StringColumn&>(col);
+    auto* stringcol = dynamic_cast<const core::StringColumn*>(&col);
+    auto* dictcol = dynamic_cast<const core::DictionaryStringColumn*>(&col);
+    if (stringcol == nullptr && dictcol == nullptr) {
+        THROW_RUNTIME_ERROR("Encoding string column expected a string implementation");
+    }
     if (nullable) {
-        WriteBitVector(w, stringcol.GetNullMask());
+        WriteBitVector(w, stringcol != nullptr ? stringcol->GetNullMask() : dictcol->GetNullMask());
     }
     switch (encoding) {
         case core::Encoding::Plain: {
-            auto& data = stringcol.GetData();
-            EncodeOffsetsPlain(w, stringcol.GetOffsets(), data.size());
-            w.WriteArray(data);
+            if (stringcol != nullptr) {
+                auto& data = stringcol->GetData();
+                EncodeOffsetsPlain(w, stringcol->GetOffsets(), data.size());
+                w.WriteArray(data);
+            } else {
+                std::vector<char> data;
+                std::vector<size_t> offsets;
+                offsets.reserve(dictcol->Size() + 1);
+                offsets.push_back(0);
+                for (size_t i = 0; i < dictcol->Size(); ++i) {
+                    if (!dictcol->IsNull(i)) {
+                        auto value = dictcol->Get(i);
+                        data.insert(data.end(), value.begin(), value.end());
+                    }
+                    offsets.push_back(data.size());
+                }
+                EncodeOffsetsPlain(w, offsets, data.size());
+                w.WriteArray(data);
+            }
             return;
         }
         case core::Encoding::Dictionary:
             if (!auto_encoding.dict_values.empty()) {
                 core::encoding::EncodeStringDictionary(w, auto_encoding.dict_values,
                                                        auto_encoding.dict_indexes);
+            } else if (dictcol != nullptr) {
+                std::vector<std::string_view> dict_values;
+                dict_values.reserve(dictcol->DictSize());
+                for (uint32_t id = 0; id < dictcol->DictSize(); ++id) {
+                    dict_values.push_back(dictcol->DictValue(id));
+                }
+                core::encoding::EncodeStringDictionary(w, dict_values, dictcol->GetIds());
             } else {
-                core::encoding::EncodeStringDictionary(w, stringcol.GetData(),
-                                                       stringcol.GetOffsets());
+                core::encoding::EncodeStringDictionary(w, stringcol->GetData(),
+                                                       stringcol->GetOffsets());
             }
             return;
         default:
@@ -226,6 +442,35 @@ void EncodeColumn(util::BufWriter& w, const core::Column& col, const core::Field
     }
     THROW_RUNTIME_ERROR("Unsupported type");
 }
+
+void WriteColumnStatistics(util::BufWriter& w, const ColumnChunkStatistics& statistics,
+                           core::PhysicalType physical_type) {
+    w.Write<uint8_t>(statistics.present ? 1 : 0);
+    if (!statistics.present) {
+        return;
+    }
+    w.Write<uint8_t>(statistics.has_min_max ? 1 : 0);
+    w.Write<uint64_t>(statistics.nulls_count);
+    if (!statistics.has_min_max) {
+        return;
+    }
+    switch (physical_type) {
+        case core::PhysicalType::Double:
+            w.Write<double>(statistics.min_double);
+            w.Write<double>(statistics.max_double);
+            break;
+        case core::PhysicalType::String:
+            w.Write<uint32_t>(static_cast<uint32_t>(statistics.min_string.size()));
+            w.WriteString(statistics.min_string);
+            w.Write<uint32_t>(static_cast<uint32_t>(statistics.max_string.size()));
+            w.WriteString(statistics.max_string);
+            break;
+        default:
+            w.Write<int64_t>(statistics.min_int);
+            w.Write<int64_t>(statistics.max_int);
+            break;
+    }
+}
 }  // namespace
 
 void BruhBatchWriter::Write(const core::Batch& batch) {
@@ -256,6 +501,8 @@ void BruhBatchWriter::WriteColumn(ColumnChunkMetaData& chunk, const core::Column
         auto_encoding = core::encoding::SelectEncoding(col, field);
         encoding = auto_encoding.encoding;
     }
+
+    chunk.statistics = BuildStatistics(col, field, auto_encoding);
 
     util::Compression compression = options_.compression;
     if (auto it = options_.column_compression.find(col_index);
@@ -315,16 +562,30 @@ void BruhBatchWriter::WriteFields() {
 
 void BruhBatchWriter::WriteRowGroups() {
     util::Write<uint32_t>(os_, metadata_.row_groups.size());
+    std::vector<uint8_t> statistics_payload;
     for (auto& group : metadata_.row_groups) {
         util::Write<uint64_t>(os_, group.rows_count);
         util::Write<uint64_t>(os_, group.byte_size);
-        for (auto& chunk : group.columns) {
+        for (size_t col = 0; col < group.columns.size(); ++col) {
+            auto& chunk = group.columns[col];
             util::Write<uint64_t>(os_, chunk.offset);
             util::Write<uint64_t>(os_, chunk.compressed_size);
             util::Write<uint64_t>(os_, chunk.uncompressed_size);
             util::Write<uint64_t>(os_, chunk.values_count);
             util::Write<uint8_t>(os_, static_cast<uint8_t>(chunk.encoding));
             util::Write<uint8_t>(os_, static_cast<uint8_t>(chunk.compression));
+            if (!chunk.statistics.has_value()) {
+                THROW_RUNTIME_ERROR("Column statistics is missing");
+            }
+            statistics_payload.clear();
+            util::BufWriter statistics_writer(statistics_payload);
+            WriteColumnStatistics(statistics_writer, *chunk.statistics,
+                                  core::DataTypeToPhysical(metadata_.schema.GetFields()[col].type));
+            if (statistics_payload.size() > std::numeric_limits<uint32_t>::max()) {
+                THROW_RUNTIME_ERROR("Column statistics payload is too large");
+            }
+            util::Write<uint32_t>(os_, static_cast<uint32_t>(statistics_payload.size()));
+            util::WriteRaw(os_, statistics_payload.data(), statistics_payload.size());
         }
     }
 }

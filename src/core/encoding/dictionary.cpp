@@ -1,7 +1,6 @@
 #include <core/encoding/dictionary.h>
 #include <util/macro.h>
 
-#include <cstring>
 #include <limits>
 #include <string_view>
 #include <unordered_map>
@@ -142,28 +141,16 @@ DecodedStringDictionary DecodeStringDictionary(util::BufReader& r, size_t n) {
         }
     }
 
-    size_t total = 0;
     for (auto idx : indexes) {
         if (idx >= dict_count) {
             THROW_RUNTIME_ERROR("Dictionary index out of range");
         }
-        total += dict_offsets[idx + 1] - dict_offsets[idx];
     }
 
     DecodedStringDictionary out;
-    out.data.resize(total);
-    out.offsets.reserve(n + 1);
-    out.offsets.push_back(0);
-    size_t pos = 0;
-    for (auto idx : indexes) {
-        size_t start = dict_offsets[idx];
-        size_t len = dict_offsets[idx + 1] - start;
-        if (len > 0) {
-            std::memcpy(out.data.data() + pos, dict_chars.data() + start, len);
-        }
-        pos += len;
-        out.offsets.push_back(pos);
-    }
+    out.dict_data = std::move(dict_chars);
+    out.dict_offsets = std::move(dict_offsets);
+    out.ids = std::move(indexes);
     return out;
 }
 }  // namespace columnar::core::encoding

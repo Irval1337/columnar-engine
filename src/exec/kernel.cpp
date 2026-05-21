@@ -4,6 +4,7 @@
 #include <core/columns/bool_column.h>
 #include <core/columns/char_column.h>
 #include <core/columns/date_column.h>
+#include <core/columns/dictionary_string_column.h>
 #include <core/columns/numeric_column.h>
 #include <core/columns/string_column.h>
 #include <core/columns/timestamp_column.h>
@@ -12,7 +13,9 @@
 
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace columnar::exec::kernel {
 namespace {
@@ -32,17 +35,8 @@ std::unique_ptr<core::BoolColumn> MakeBoolColumn(size_t rows) {
     return out;
 }
 
-template <typename F>
-void ForLogicalRows(const std::vector<uint32_t>* selection, size_t rows, F&& f) {
-    if (selection != nullptr) {
-        for (uint32_t i : *selection) {
-            f(static_cast<size_t>(i));
-        }
-    } else {
-        for (size_t i = 0; i < rows; ++i) {
-            f(i);
-        }
-    }
+const core::DictionaryStringColumn* AsDictionaryString(const core::Column& col) {
+    return dynamic_cast<const core::DictionaryStringColumn*>(&col);
 }
 
 template <typename Col, typename F>
@@ -50,13 +44,13 @@ void ForEachNonNull(const Col& col, const std::vector<uint32_t>* selection, F&& 
     const auto& data = col.GetData();
     if (col.IsNullable()) {
         const auto& mask = col.GetNullMask();
-        ForLogicalRows(selection, data.size(), [&](size_t i) {
+        ForSelectedRows(selection, data.size(), [&](size_t i) {
             if (!mask.Get(i)) {
                 f(data[i]);
             }
         });
     } else {
-        ForLogicalRows(selection, data.size(), [&](size_t i) { f(data[i]); });
+        ForSelectedRows(selection, data.size(), [&](size_t i) { f(data[i]); });
     }
 }
 
@@ -64,13 +58,13 @@ template <typename F>
 void ForEachNonNull(const core::BoolColumn& col, const std::vector<uint32_t>* selection, F&& f) {
     if (col.IsNullable()) {
         const auto& mask = col.GetNullMask();
-        ForLogicalRows(selection, col.Size(), [&](size_t i) {
+        ForSelectedRows(selection, col.Size(), [&](size_t i) {
             if (!mask.Get(i)) {
                 f(col.Get(i));
             }
         });
     } else {
-        ForLogicalRows(selection, col.Size(), [&](size_t i) { f(col.Get(i)); });
+        ForSelectedRows(selection, col.Size(), [&](size_t i) { f(col.Get(i)); });
     }
 }
 
@@ -151,18 +145,16 @@ std::unique_ptr<core::Column> CompareStrings(const core::Column& lhs, const core
         rhs.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("Compare: expected string columns on both sides");
     }
-    auto& l = static_cast<const core::StringColumn&>(lhs);
-    auto& r = static_cast<const core::StringColumn&>(rhs);
-    size_t rows = l.Size();
-    if (r.Size() != rows) {
+    size_t rows = lhs.Size();
+    if (rhs.Size() != rows) {
         THROW_RUNTIME_ERROR("Compare: row count mismatch");
     }
     auto out = MakeBoolColumn(rows);
     for (size_t i = 0; i < rows; ++i) {
-        if (l.IsNull(i) || r.IsNull(i)) {
+        if (lhs.IsNull(i) || rhs.IsNull(i)) {
             out->Append(false);
         } else {
-            out->Append(cmp(l.Get(i), r.Get(i)));
+            out->Append(cmp(ReadStringRow(lhs, i), ReadStringRow(rhs, i)));
         }
     }
     return out;
@@ -182,10 +174,9 @@ std::unique_ptr<core::Column> CompareDispatch(const core::Column& lhs, const cor
     return CompareIntegers(lhs, rhs, cmp);
 }
 
-enum class ArithmeticOp { Add, Subtract, Multiply };
-
-std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core::Column& rhs,
-                                            ArithmeticOp op) {
+template <typename Op>
+std::unique_ptr<core::Column> ArithmeticIntImpl(const core::Column& lhs, const core::Column& rhs,
+                                                Op op) {
     size_t rows = lhs.Size();
     if (rhs.Size() != rows) {
         THROW_RUNTIME_ERROR("Arithmetic: row count mismatch");
@@ -199,15 +190,8 @@ std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core:
             const util::BitVector* rmask = r.IsNullable() ? &r.GetNullMask() : nullptr;
             if (lmask == nullptr && rmask == nullptr) {
                 for (size_t i = 0; i < rows; ++i) {
-                    auto a = static_cast<int64_t>(ReadTypedValue(l, i));
-                    auto b = static_cast<int64_t>(ReadTypedValue(r, i));
-                    if (op == ArithmeticOp::Add) {
-                        data[i] = a + b;
-                    } else if (op == ArithmeticOp::Subtract) {
-                        data[i] = a - b;
-                    } else {
-                        data[i] = a * b;
-                    }
+                    data[i] = op(static_cast<int64_t>(ReadTypedValue(l, i)),
+                                 static_cast<int64_t>(ReadTypedValue(r, i)));
                 }
                 return;
             }
@@ -216,15 +200,8 @@ std::unique_ptr<core::Column> ArithmeticInt(const core::Column& lhs, const core:
                     mask.Set(i);
                     continue;
                 }
-                auto a = static_cast<int64_t>(ReadTypedValue(l, i));
-                auto b = static_cast<int64_t>(ReadTypedValue(r, i));
-                if (op == ArithmeticOp::Add) {
-                    data[i] = a + b;
-                } else if (op == ArithmeticOp::Subtract) {
-                    data[i] = a - b;
-                } else {
-                    data[i] = a * b;
-                }
+                data[i] = op(static_cast<int64_t>(ReadTypedValue(l, i)),
+                             static_cast<int64_t>(ReadTypedValue(r, i)));
             }
         });
     });
@@ -256,6 +233,18 @@ std::unique_ptr<core::Column> CompareStringConst(const core::Column& col, std::s
     if (col.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("CompareStringConst: expected string column");
     }
+    if (auto* dict = AsDictionaryString(col)) {
+        std::vector<uint8_t> dict_results(dict->DictSize(), 0);
+        for (uint32_t id = 0; id < dict_results.size(); ++id) {
+            dict_results[id] = cmp(dict->DictValue(id), value) ? 1 : 0;
+        }
+        size_t rows = dict->Size();
+        auto out = MakeBoolColumn(rows);
+        for (size_t i = 0; i < rows; ++i) {
+            out->Append(!dict->IsNull(i) && dict_results[dict->GetId(i)] != 0);
+        }
+        return out;
+    }
     auto& s = static_cast<const core::StringColumn&>(col);
     size_t rows = s.Size();
     auto out = MakeBoolColumn(rows);
@@ -272,10 +261,8 @@ std::unique_ptr<core::Column> CompareStringConst(const core::Column& col, std::s
 }
 
 std::string_view ApplyPrefixCapture(std::string_view value,
-                                    const std::vector<std::string>& prefixes,
-                                    char delimiter,
-                                    bool require_non_empty,
-                                    bool single_line_tail) {
+                                    const std::vector<std::string>& prefixes, char delimiter,
+                                    bool require_non_empty, bool single_line_tail) {
     for (const auto& prefix : prefixes) {
         if (!value.starts_with(prefix)) {
             continue;
@@ -286,13 +273,49 @@ std::string_view ApplyPrefixCapture(std::string_view value,
             (require_non_empty && capture_end == capture_begin)) {
             continue;
         }
-        if (single_line_tail &&
-            value.find('\n', capture_end + 1) != std::string_view::npos) {
+        if (single_line_tail && value.find('\n', capture_end + 1) != std::string_view::npos) {
             continue;
         }
         return value.substr(capture_begin, capture_end - capture_begin);
     }
     return value;
+}
+
+template <typename Transform>
+std::unique_ptr<core::Column> MapDictionaryString(const core::DictionaryStringColumn& dict,
+                                                  Transform&& transform) {
+    std::vector<char> out_data;
+    std::vector<size_t> out_offsets;
+    std::vector<uint32_t> remap(dict.DictSize());
+    std::unordered_map<std::string, uint32_t> output_ids;
+    out_offsets.reserve(dict.DictSize() + 1);
+    out_offsets.push_back(0);
+
+    for (uint32_t id = 0; id < dict.DictSize(); ++id) {
+        std::string value = transform(dict.DictValue(id));
+        auto it = output_ids.find(value);
+        if (it == output_ids.end()) {
+            uint32_t out_id = static_cast<uint32_t>(out_offsets.size() - 1);
+            it = output_ids.emplace(value, out_id).first;
+            out_data.insert(out_data.end(), value.begin(), value.end());
+            out_offsets.push_back(out_data.size());
+        }
+        remap[id] = it->second;
+    }
+
+    std::vector<uint32_t> ids;
+    ids.reserve(dict.Size());
+    for (size_t i = 0; i < dict.Size(); ++i) {
+        ids.push_back(remap[dict.GetId(i)]);
+    }
+
+    util::BitVector is_null;
+    if (dict.IsNullable()) {
+        is_null = dict.GetNullMask();
+    }
+    return std::make_unique<core::DictionaryStringColumn>(std::move(out_data),
+                                                          std::move(out_offsets), std::move(ids),
+                                                          std::move(is_null), dict.IsNullable());
 }
 }  // namespace
 
@@ -394,22 +417,25 @@ std::unique_ptr<core::Column> GreaterOrEqualConstString(const core::Column& col,
                               [](std::string_view a, std::string_view b) { return a >= b; });
 }
 
-std::unique_ptr<core::Column> And(const core::Column& lhs, const core::Column& rhs) {
+namespace {
+template <typename Op>
+std::unique_ptr<core::Column> BoolBinaryImpl(const core::Column& lhs, const core::Column& rhs,
+                                             const char* name, Op op) {
     if (lhs.GetDataType() != core::DataType::Bool || rhs.GetDataType() != core::DataType::Bool) {
-        THROW_RUNTIME_ERROR("AND operands must be boolean");
+        THROW_RUNTIME_ERROR(std::string(name) + " operands must be boolean");
     }
     auto& l = static_cast<const core::BoolColumn&>(lhs);
     auto& r = static_cast<const core::BoolColumn&>(rhs);
     size_t rows = l.Size();
     if (r.Size() != rows) {
-        THROW_RUNTIME_ERROR("AND: row count mismatch");
+        THROW_RUNTIME_ERROR(std::string(name) + ": row count mismatch");
     }
     const auto& ld = l.GetData();
     const auto& rd = r.GetData();
     auto out = MakeBoolColumn(rows);
     if (!l.IsNullable() && !r.IsNullable()) {
         for (size_t i = 0; i < rows; ++i) {
-            out->Append(ld.Get(i) && rd.Get(i));
+            out->Append(op(ld.Get(i), rd.Get(i)));
         }
         return out;
     }
@@ -418,56 +444,49 @@ std::unique_ptr<core::Column> And(const core::Column& lhs, const core::Column& r
     for (size_t i = 0; i < rows; ++i) {
         bool lv = ld.Get(i) && !(lmask && lmask->Get(i));
         bool rv = rd.Get(i) && !(rmask && rmask->Get(i));
-        out->Append(lv && rv);
+        out->Append(op(lv, rv));
     }
     return out;
+}
+}  // namespace
+
+std::unique_ptr<core::Column> And(const core::Column& lhs, const core::Column& rhs) {
+    return BoolBinaryImpl(lhs, rhs, "AND", [](bool a, bool b) { return a && b; });
 }
 
 std::unique_ptr<core::Column> Or(const core::Column& lhs, const core::Column& rhs) {
-    if (lhs.GetDataType() != core::DataType::Bool || rhs.GetDataType() != core::DataType::Bool) {
-        THROW_RUNTIME_ERROR("OR operands must be boolean");
-    }
-    auto& l = static_cast<const core::BoolColumn&>(lhs);
-    auto& r = static_cast<const core::BoolColumn&>(rhs);
-    size_t rows = l.Size();
-    if (r.Size() != rows) {
-        THROW_RUNTIME_ERROR("OR: row count mismatch");
-    }
-    const auto& ld = l.GetData();
-    const auto& rd = r.GetData();
-    auto out = MakeBoolColumn(rows);
-    if (!l.IsNullable() && !r.IsNullable()) {
-        for (size_t i = 0; i < rows; ++i) {
-            out->Append(ld.Get(i) || rd.Get(i));
-        }
-        return out;
-    }
-    const util::BitVector* lmask = l.IsNullable() ? &l.GetNullMask() : nullptr;
-    const util::BitVector* rmask = r.IsNullable() ? &r.GetNullMask() : nullptr;
-    for (size_t i = 0; i < rows; ++i) {
-        bool lv = ld.Get(i) && !(lmask && lmask->Get(i));
-        bool rv = rd.Get(i) && !(rmask && rmask->Get(i));
-        out->Append(lv || rv);
-    }
-    return out;
+    return BoolBinaryImpl(lhs, rhs, "OR", [](bool a, bool b) { return a || b; });
 }
 
 std::unique_ptr<core::Column> Add(const core::Column& lhs, const core::Column& rhs) {
-    return ArithmeticInt(lhs, rhs, ArithmeticOp::Add);
+    return ArithmeticIntImpl(lhs, rhs, [](int64_t a, int64_t b) { return a + b; });
 }
 
 std::unique_ptr<core::Column> Subtract(const core::Column& lhs, const core::Column& rhs) {
-    return ArithmeticInt(lhs, rhs, ArithmeticOp::Subtract);
+    return ArithmeticIntImpl(lhs, rhs, [](int64_t a, int64_t b) { return a - b; });
 }
 
 std::unique_ptr<core::Column> Multiply(const core::Column& lhs, const core::Column& rhs) {
-    return ArithmeticInt(lhs, rhs, ArithmeticOp::Multiply);
+    return ArithmeticIntImpl(lhs, rhs, [](int64_t a, int64_t b) { return a * b; });
 }
 
 std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::string_view substring,
                                           bool negated) {
     if (operand.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("StrContains operand must be a string column");
+    }
+    if (auto* dict = AsDictionaryString(operand)) {
+        std::vector<uint8_t> dict_results(dict->DictSize(), 0);
+        for (uint32_t id = 0; id < dict_results.size(); ++id) {
+            bool found = dict->DictValue(id).find(substring) != std::string_view::npos;
+            dict_results[id] = (found != negated) ? 1 : 0;
+        }
+        size_t rows = dict->Size();
+        auto out = MakeBoolColumn(rows);
+        for (size_t i = 0; i < rows; ++i) {
+            out->Append(!dict->IsNull(i) && dict_results[dict->GetId(i)] != 0);
+        }
+        return out;
     }
     auto& s = static_cast<const core::StringColumn&>(operand);
     size_t rows = s.Size();
@@ -478,7 +497,7 @@ std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::stri
             continue;
         }
         bool found = s.Get(i).find(substring) != std::string_view::npos;
-        out->Append(negated ? !found : found);
+        out->Append(found != negated);
     }
     return out;
 }
@@ -486,6 +505,23 @@ std::unique_ptr<core::Column> StrContains(const core::Column& operand, std::stri
 std::unique_ptr<core::Column> StrLength(const core::Column& operand) {
     if (operand.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("length() operand must be a string column");
+    }
+    if (auto* dict = AsDictionaryString(operand)) {
+        std::vector<int64_t> lengths(dict->DictSize(), 0);
+        for (uint32_t id = 0; id < lengths.size(); ++id) {
+            lengths[id] = static_cast<int64_t>(dict->DictValue(id).size());
+        }
+        size_t rows = dict->Size();
+        auto out = std::make_unique<core::Int64Column>(dict->IsNullable());
+        out->Reserve(rows);
+        for (size_t i = 0; i < rows; ++i) {
+            if (dict->IsNull(i)) {
+                out->AppendNull();
+            } else {
+                out->Append(lengths[dict->GetId(i)]);
+            }
+        }
+        return out;
     }
     auto& s = static_cast<const core::StringColumn&>(operand);
     size_t rows = s.Size();
@@ -540,6 +576,13 @@ std::unique_ptr<core::Column> RegexReplace(const core::Column& operand, const RE
     if (operand.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("REGEXP_REPLACE operand must be a string column");
     }
+    if (auto* dict = AsDictionaryString(operand)) {
+        return MapDictionaryString(*dict, [&](std::string_view value) {
+            std::string replaced(value);
+            RE2::GlobalReplace(&replaced, regex, replacement);
+            return replaced;
+        });
+    }
     auto& s = static_cast<const core::StringColumn&>(operand);
     size_t rows = s.Size();
     auto out = std::make_unique<core::StringColumn>(s.IsNullable());
@@ -559,11 +602,17 @@ std::unique_ptr<core::Column> RegexReplace(const core::Column& operand, const RE
 
 std::unique_ptr<core::Column> PrefixCapture(const core::Column& operand,
                                             const std::vector<std::string>& prefixes,
-                                            char delimiter,
-                                            bool require_non_empty,
+                                            char delimiter, bool require_non_empty,
                                             bool single_line_tail) {
     if (operand.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("PrefixCapture operand must be a string column");
+    }
+    if (auto* dict = AsDictionaryString(operand)) {
+        return MapDictionaryString(*dict, [&](std::string_view value) {
+            auto captured =
+                ApplyPrefixCapture(value, prefixes, delimiter, require_non_empty, single_line_tail);
+            return std::string(captured.data(), captured.size());
+        });
     }
     auto& s = static_cast<const core::StringColumn&>(operand);
     size_t rows = s.Size();
@@ -575,8 +624,8 @@ std::unique_ptr<core::Column> PrefixCapture(const core::Column& operand,
             continue;
         }
         auto value = s.Get(i);
-        out->Append(ApplyPrefixCapture(value, prefixes, delimiter,
-                                       require_non_empty, single_line_tail));
+        out->Append(
+            ApplyPrefixCapture(value, prefixes, delimiter, require_non_empty, single_line_tail));
     }
     return out;
 }
@@ -668,13 +717,12 @@ ScalarReduction<std::string> MinMaxStringImpl(const core::Column& col,
     if (col.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("MIN/MAX string: not a string column");
     }
-    auto& s = static_cast<const core::StringColumn&>(col);
     ScalarReduction<std::string> r;
-    ForLogicalRows(selection, s.Size(), [&](size_t i) {
-        if (s.IsNull(i)) {
+    ForSelectedRows(selection, col.Size(), [&](size_t i) {
+        if (col.IsNull(i)) {
             return;
         }
-        auto v = s.Get(i);
+        auto v = ReadStringRow(col, i);
         if (!r.has_value || better(v, std::string_view(r.value))) {
             r.value.assign(v.data(), v.size());
             r.has_value = true;
@@ -712,7 +760,7 @@ uint64_t CountNonNull(const core::Column& col, const std::vector<uint32_t>* sele
         return selection != nullptr ? selection->size() : col.Size();
     }
     uint64_t c = 0;
-    ForLogicalRows(selection, col.Size(), [&](size_t i) {
+    ForSelectedRows(selection, col.Size(), [&](size_t i) {
         if (!col.IsNull(i)) {
             ++c;
         }
@@ -732,10 +780,9 @@ void DistinctStrings(const core::Column& col, std::unordered_set<std::string>& o
     if (col.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("DistinctStrings: not a string column");
     }
-    auto& s = static_cast<const core::StringColumn&>(col);
-    ForLogicalRows(selection, s.Size(), [&](size_t i) {
-        if (!s.IsNull(i)) {
-            out.emplace(s.Get(i));
+    ForSelectedRows(selection, col.Size(), [&](size_t i) {
+        if (!col.IsNull(i)) {
+            out.emplace(ReadStringRow(col, i));
         }
     });
 }

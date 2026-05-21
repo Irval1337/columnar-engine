@@ -28,48 +28,35 @@ bool RequiresDenseBatch(const std::vector<SortUnit>& sort_units) {
     return false;
 }
 
+template <typename T>
+int Compare3(const T& a, const T& b) {
+    if (a < b) {
+        return -1;
+    }
+    if (a > b) {
+        return 1;
+    }
+    return 0;
+}
+
 int CompareRowRefs(const core::Column& col_a, size_t row_a, const core::Column& col_b,
                    size_t row_b) {
     bool a_null = col_a.IsNull(row_a);
     bool b_null = col_b.IsNull(row_b);
-    if (a_null || b_null) {
-        if (a_null && b_null) {
-            return 0;
-        }
+    if (a_null != b_null) {
         return a_null ? -1 : 1;
     }
-    auto type = col_a.GetDataType();
-    if (type == core::DataType::String) {
-        auto av = ReadStringRow(col_a, row_a);
-        auto bv = ReadStringRow(col_b, row_b);
-        if (av < bv) {
-            return -1;
-        }
-        if (av > bv) {
-            return 1;
-        }
+    if (a_null) {
         return 0;
     }
-    if (type == core::DataType::Double) {
-        auto av = ReadDoubleRow(col_a, row_a);
-        auto bv = ReadDoubleRow(col_b, row_b);
-        if (av < bv) {
-            return -1;
-        }
-        if (av > bv) {
-            return 1;
-        }
-        return 0;
+    switch (col_a.GetDataType()) {
+        case core::DataType::String:
+            return Compare3(ReadStringRow(col_a, row_a), ReadStringRow(col_b, row_b));
+        case core::DataType::Double:
+            return Compare3(ReadDoubleRow(col_a, row_a), ReadDoubleRow(col_b, row_b));
+        default:
+            return Compare3(ReadIntegerRow(col_a, row_a), ReadIntegerRow(col_b, row_b));
     }
-    auto av = ReadIntegerRow(col_a, row_a);
-    auto bv = ReadIntegerRow(col_b, row_b);
-    if (av < bv) {
-        return -1;
-    }
-    if (av > bv) {
-        return 1;
-    }
-    return 0;
 }
 }  // namespace
 
@@ -105,16 +92,11 @@ void TopNSink::Finalize() {
     auto for_each_input_row = [&](auto&& emit) {
         for (size_t b = 0; b < buffer_.size(); ++b) {
             const auto& batch = buffer_[b];
-            if (batch.HasSelection()) {
-                for (uint32_t r : batch.Selection()) {
-                    emit(static_cast<uint32_t>(b), r);
-                }
-            } else {
-                size_t rows = batch.RowsCount();
-                for (size_t r = 0; r < rows; ++r) {
-                    emit(static_cast<uint32_t>(b), static_cast<uint32_t>(r));
-                }
-            }
+            const std::vector<uint32_t>* sel =
+                batch.HasSelection() ? &batch.Selection() : nullptr;
+            ForSelectedRows(sel, batch.RowsCount(), [&](size_t row) {
+                emit(static_cast<uint32_t>(b), static_cast<uint32_t>(row));
+            });
         }
     };
 

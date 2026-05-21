@@ -1,5 +1,6 @@
 #include <exec/expression.h>
 #include <core/columns/bool_column.h>
+#include <core/columns/dictionary_string_column.h>
 #include <core/columns/string_column.h>
 #include <exec/column_helpers.h>
 #include <exec/kernel.h>
@@ -9,6 +10,7 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace columnar::exec {
 namespace {
@@ -25,22 +27,26 @@ struct IntCompareTerm {
 
 struct StringCompareTerm {
     const core::Column* col = nullptr;
+    const core::DictionaryStringColumn* dict_col = nullptr;
     std::string_view value;
     BinaryFunction function = BinaryFunction::Equal;
+    std::vector<uint8_t> dict_matches;
 };
 
 struct ContainsTerm {
     const core::Column* col = nullptr;
+    const core::DictionaryStringColumn* dict_col = nullptr;
     std::string_view substring;
     bool negated = false;
+    std::vector<uint8_t> dict_matches;
 };
 
 struct BoolColumnTerm {
     const core::BoolColumn* col = nullptr;
 };
 
-using PredicateTerm = std::variant<InIntTerm, IntCompareTerm, StringCompareTerm, ContainsTerm,
-                                   BoolColumnTerm>;
+using PredicateTerm =
+    std::variant<InIntTerm, IntCompareTerm, StringCompareTerm, ContainsTerm, BoolColumnTerm>;
 
 std::unique_ptr<core::Column> EvalFunction(const core::Column& arg, ScalarFunction function) {
     switch (function) {
@@ -87,6 +93,10 @@ bool IsComparisonFunction(BinaryFunction f) {
     return f == BinaryFunction::Equal || f == BinaryFunction::NotEqual ||
            f == BinaryFunction::Less || f == BinaryFunction::LessOrEqual ||
            f == BinaryFunction::Greater || f == BinaryFunction::GreaterOrEqual;
+}
+
+bool IsConstExpression(const Expression& expr) {
+    return expr.type == ExpressionType::ConstInt64 || expr.type == ExpressionType::ConstString;
 }
 
 BinaryFunction FlipComparison(BinaryFunction f) {
@@ -152,14 +162,11 @@ std::unique_ptr<core::Column> TryEvalConstCompare(const core::Batch& batch,
     const Expression* col_side = binary.lhs.get();
     const Expression* const_side = binary.rhs.get();
     bool flipped = false;
-    auto is_const = [](const Expression* e) {
-        return e->type == ExpressionType::ConstInt64 || e->type == ExpressionType::ConstString;
-    };
-    if (is_const(col_side)) {
+    if (IsConstExpression(*col_side)) {
         std::swap(col_side, const_side);
         flipped = true;
     }
-    if (!is_const(const_side) || is_const(col_side)) {
+    if (!IsConstExpression(*const_side) || IsConstExpression(*col_side)) {
         return nullptr;
     }
     auto op = flipped ? FlipComparison(binary.function) : binary.function;
@@ -196,6 +203,30 @@ bool CompareValues(T lhs, T rhs, BinaryFunction function) {
             return lhs >= rhs;
         default:
             THROW_RUNTIME_ERROR("CompareValues: not a comparison");
+    }
+}
+
+void PrepareDictionaryTerm(StringCompareTerm& term) {
+    term.dict_col = dynamic_cast<const core::DictionaryStringColumn*>(term.col);
+    if (term.dict_col == nullptr) {
+        return;
+    }
+    term.dict_matches.resize(term.dict_col->DictSize());
+    for (uint32_t id = 0; id < term.dict_matches.size(); ++id) {
+        term.dict_matches[id] =
+            CompareValues(term.dict_col->DictValue(id), term.value, term.function) ? 1 : 0;
+    }
+}
+
+void PrepareDictionaryTerm(ContainsTerm& term) {
+    term.dict_col = dynamic_cast<const core::DictionaryStringColumn*>(term.col);
+    if (term.dict_col == nullptr) {
+        return;
+    }
+    term.dict_matches.resize(term.dict_col->DictSize());
+    for (uint32_t id = 0; id < term.dict_matches.size(); ++id) {
+        bool found = term.dict_col->DictValue(id).find(term.substring) != std::string_view::npos;
+        term.dict_matches[id] = (found != term.negated) ? 1 : 0;
     }
 }
 
@@ -254,8 +285,10 @@ bool TryCompileSimpleTerm(const core::Batch& batch, const Expression& expr,
         if (column_expr.type != core::DataType::String) {
             return false;
         }
-        terms.push_back(ContainsTerm{&ResolveColumn(batch, column_expr), contains.substring,
-                                     contains.negated});
+        ContainsTerm term{
+            &ResolveColumn(batch, column_expr), nullptr, contains.substring, contains.negated, {}};
+        PrepareDictionaryTerm(term);
+        terms.push_back(std::move(term));
         return true;
     }
 
@@ -270,8 +303,7 @@ bool TryCompileSimpleTerm(const core::Batch& batch, const Expression& expr,
     const Expression* col_side = binary.lhs.get();
     const Expression* const_side = binary.rhs.get();
     bool flipped = false;
-    if (col_side->type == ExpressionType::ConstInt64 ||
-        col_side->type == ExpressionType::ConstString) {
+    if (IsConstExpression(*col_side)) {
         std::swap(col_side, const_side);
         flipped = true;
     }
@@ -292,9 +324,13 @@ bool TryCompileSimpleTerm(const core::Batch& batch, const Expression& expr,
     }
     if (const_side->type == ExpressionType::ConstString &&
         column_expr.type == core::DataType::String) {
-        terms.push_back(StringCompareTerm{&ResolveColumn(batch, column_expr),
-                                          static_cast<const ConstString&>(*const_side).value,
-                                          function});
+        StringCompareTerm term{&ResolveColumn(batch, column_expr),
+                               nullptr,
+                               static_cast<const ConstString&>(*const_side).value,
+                               function,
+                               {}};
+        PrepareDictionaryTerm(term);
+        terms.push_back(std::move(term));
         return true;
     }
     return false;
@@ -338,18 +374,24 @@ bool MatchesTerm(const PredicateTerm& term, size_t row) {
                 return false;
             } else if constexpr (std::is_same_v<T, IntCompareTerm>) {
                 return !typed.col->IsNull(row) &&
-                       CompareValues(ReadIntegerRow(*typed.col, row), typed.value,
-                                     typed.function);
+                       CompareValues(ReadIntegerRow(*typed.col, row), typed.value, typed.function);
             } else if constexpr (std::is_same_v<T, StringCompareTerm>) {
-                return !typed.col->IsNull(row) &&
-                       CompareValues(ReadStringRow(*typed.col, row), typed.value,
-                                     typed.function);
+                if (typed.col->IsNull(row)) {
+                    return false;
+                }
+                if (typed.dict_col != nullptr) {
+                    return typed.dict_matches[typed.dict_col->GetId(row)] != 0;
+                }
+                return CompareValues(ReadStringRow(*typed.col, row), typed.value, typed.function);
             } else if constexpr (std::is_same_v<T, ContainsTerm>) {
                 if (typed.col->IsNull(row)) {
                     return false;
                 }
-                bool found = ReadStringRow(*typed.col, row).find(typed.substring) !=
-                             std::string_view::npos;
+                if (typed.dict_col != nullptr) {
+                    return typed.dict_matches[typed.dict_col->GetId(row)] != 0;
+                }
+                bool found =
+                    ReadStringRow(*typed.col, row).find(typed.substring) != std::string_view::npos;
                 return typed.negated ? !found : found;
             } else if constexpr (std::is_same_v<T, BoolColumnTerm>) {
                 return !typed.col->IsNull(row) && typed.col->Get(row);
@@ -363,20 +405,12 @@ bool MatchesTerm(const PredicateTerm& term, size_t row) {
 std::vector<uint32_t> SelectionFromMask(const core::Batch& batch, const core::BoolColumn& mask) {
     std::vector<uint32_t> selection;
     selection.reserve(batch.SelectedRowsCount());
-    if (batch.HasSelection()) {
-        for (uint32_t row : batch.Selection()) {
-            if (!mask.IsNull(row) && mask.Get(row)) {
-                selection.push_back(row);
-            }
+    const std::vector<uint32_t>* input = batch.HasSelection() ? &batch.Selection() : nullptr;
+    ForSelectedRows(input, batch.RowsCount(), [&](size_t row) {
+        if (!mask.IsNull(row) && mask.Get(row)) {
+            selection.push_back(static_cast<uint32_t>(row));
         }
-    } else {
-        size_t rows = batch.RowsCount();
-        for (size_t row = 0; row < rows; ++row) {
-            if (!mask.IsNull(row) && mask.Get(row)) {
-                selection.push_back(static_cast<uint32_t>(row));
-            }
-        }
-    }
+    });
     return selection;
 }
 }  // namespace
@@ -497,16 +531,14 @@ EvalResult Evaluate(const core::Batch& batch, const Expression& expr) {
             auto& prefix_capture = static_cast<const PrefixCaptureExpr&>(expr);
             auto arg = Evaluate(batch, *prefix_capture.arg);
             return kernel::PrefixCapture(arg.Get(), prefix_capture.prefixes,
-                                         prefix_capture.delimiter,
-                                         prefix_capture.require_non_empty,
+                                         prefix_capture.delimiter, prefix_capture.require_non_empty,
                                          prefix_capture.single_line_tail);
         }
     }
     THROW_RUNTIME_ERROR("Unsupported expression type");
 }
 
-std::vector<uint32_t> EvaluatePredicateSelection(const core::Batch& batch,
-                                                 const Expression& expr) {
+std::vector<uint32_t> EvaluatePredicateSelection(const core::Batch& batch, const Expression& expr) {
     std::vector<PredicateTerm> terms;
     if (!TryCompileTerms(batch, expr, terms) ||
         (terms.size() == 1 && !std::holds_alternative<InIntTerm>(terms.front()))) {
@@ -518,13 +550,13 @@ std::vector<uint32_t> EvaluatePredicateSelection(const core::Batch& batch,
     }
 
     std::vector<uint32_t> selection;
-    selection.reserve(batch.SelectedRowsCount());
     if (batch.HasSelection()) {
         selection = batch.Selection();
     } else {
         size_t rows = batch.RowsCount();
+        selection.resize(rows);
         for (size_t row = 0; row < rows; ++row) {
-            selection.push_back(static_cast<uint32_t>(row));
+            selection[row] = static_cast<uint32_t>(row);
         }
     }
 

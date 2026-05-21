@@ -36,6 +36,7 @@ add_library(columnar_lib
   src/exec/global_aggregate_operator.cpp
   src/exec/hash_aggregate_operator.cpp
   src/exec/kernel.cpp
+  src/exec/metadata_pruning.cpp
   src/exec/operator.cpp
   src/exec/project_operator.cpp
   src/exec/topn_operator.cpp

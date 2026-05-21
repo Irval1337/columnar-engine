@@ -67,6 +67,42 @@ TEST(BruhBatchReader, ReadBasic) {
     EXPECT_EQ(batch.ColumnAt(1).GetAsString(1), "bbbbb");
 }
 
+TEST(BruhBatchReader, ReadsColumnStatistics) {
+    core::Schema schema({core::Field("id", core::DataType::Int64),
+                         core::Field("name", core::DataType::String, true)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhBatchWriter writer(ss, schema);
+        core::Batch batch(schema);
+        batch.ColumnAt(0).AppendFromString("7");
+        batch.ColumnAt(1).AppendFromString("beta");
+        batch.ColumnAt(0).AppendFromString("3");
+        batch.ColumnAt(1).AppendNull();
+        batch.ColumnAt(0).AppendFromString("5");
+        batch.ColumnAt(1).AppendFromString("alpha");
+        writer.Write(batch);
+        writer.Flush();
+    }
+
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
+    auto& id_stats = reader.GetColumnStatistics(0, 0);
+    auto& name_stats = reader.GetColumnStatistics(0, 1);
+
+    EXPECT_TRUE(id_stats.present);
+    EXPECT_TRUE(id_stats.has_min_max);
+    EXPECT_EQ(id_stats.nulls_count, 0);
+    EXPECT_EQ(id_stats.min_int, 3);
+    EXPECT_EQ(id_stats.max_int, 7);
+
+    EXPECT_TRUE(name_stats.present);
+    EXPECT_TRUE(name_stats.has_min_max);
+    EXPECT_EQ(name_stats.nulls_count, 1);
+    EXPECT_EQ(name_stats.min_string, "alpha");
+    EXPECT_EQ(name_stats.max_string, "beta");
+}
+
 TEST(BruhBatchReader, MultipleRowGroups) {
     core::Schema schema({core::Field("x", core::DataType::Int64)});
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);

@@ -1,5 +1,6 @@
 #include <core/encoding/bit_packing.h>
 #include <core/encoding/delta.h>
+#include <core/columns/dictionary_string_column.h>
 #include <gtest/gtest.h>
 #include <bruh/bruh.h>
 #include <core/schema.h>
@@ -62,6 +63,7 @@ TEST(BruhDictionary, StringLowCardinalityRoundTrip) {
         util::ByteView{reinterpret_cast<const uint8_t*>(buf.data()), buf.size()});
     auto batch = reader.ReadRowGroup(0);
     ASSERT_EQ(batch.RowsCount(), values.size());
+    ASSERT_NE(dynamic_cast<const core::DictionaryStringColumn*>(&batch.ColumnAt(0)), nullptr);
     for (size_t i = 0; i < values.size(); ++i) {
         EXPECT_EQ(batch.ColumnAt(0).GetAsString(i), values[i]);
     }

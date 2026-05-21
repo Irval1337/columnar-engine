@@ -1,12 +1,17 @@
 #include <gtest/gtest.h>
 #include <bruh/bruh.h>
+#include <core/columns/dictionary_string_column.h>
 #include <core/columns/string_column.h>
 #include <core/columns/timestamp_column.h>
 #include <exec/clickbench.h>
 #include <exec/kernel.h>
+#include <exec/metadata_pruning.h>
 #include <exec/operator.h>
 
+#include <cmath>
+#include <cstring>
 #include <set>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -199,6 +204,21 @@ core::Batch RunPlanOnBatch(const core::Batch& batch, std::shared_ptr<exec::Opera
     return std::move(batches[0]);
 }
 
+std::unique_ptr<core::DictionaryStringColumn> MakeDictionaryStringColumn(
+    std::vector<std::string_view> dict_values,
+    std::vector<uint32_t> ids) {
+    std::vector<char> data;
+    std::vector<size_t> offsets;
+    offsets.reserve(dict_values.size() + 1);
+    offsets.push_back(0);
+    for (auto value : dict_values) {
+        data.insert(data.end(), value.begin(), value.end());
+        offsets.push_back(data.size());
+    }
+    return std::make_unique<core::DictionaryStringColumn>(
+        std::move(data), std::move(offsets), std::move(ids), util::BitVector(), false);
+}
+
 size_t TotalRows(const std::vector<core::Batch>& batches) {
     size_t total = 0;
     for (auto& batch : batches) {
@@ -228,6 +248,99 @@ TEST(BruhBatchReader, ReadZeroColumnsReturnsEmptyBatch) {
     auto projected = reader.ReadRowGroup(0, std::vector<size_t>{});
     EXPECT_EQ(projected.ColumnsCount(), 0);
     EXPECT_EQ(projected.RowsCount(), 0);
+}
+
+TEST(Execution, FilterSkipsRowGroupsByStatistics) {
+    core::Schema schema({core::Field("x", core::DataType::Int64)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhWriterOptions options;
+        options.compression = util::Compression::None;
+        options.encoding = core::Encoding::Plain;
+        bruh::BruhBatchWriter writer(ss, schema, options);
+
+        core::Batch skipped(schema);
+        skipped.ColumnAt(0).AppendFromString("1");
+        skipped.ColumnAt(0).AppendFromString("2");
+        writer.Write(skipped);
+
+        core::Batch matched(schema);
+        matched.ColumnAt(0).AppendFromString("5");
+        matched.ColumnAt(0).AppendFromString("5");
+        writer.Write(matched);
+        writer.Flush();
+    }
+
+    auto buf = ss.str();
+    bruh::BruhBatchReader metadata_reader(AsBytes(buf));
+    auto& chunk = metadata_reader.GetMetaData().row_groups[0].columns[0];
+    int64_t poison = 5;
+    auto offset = static_cast<size_t>(chunk.offset);
+    std::memcpy(buf.data() + offset, &poison, sizeof(poison));
+    std::memcpy(buf.data() + offset + sizeof(poison), &poison, sizeof(poison));
+
+    bruh::BruhBatchReader reader(AsBytes(buf));
+    auto condition = exec::MakeBinary(exec::BinaryFunction::Equal,
+                                      exec::MakeColumnExpr("x", core::DataType::Int64),
+                                      exec::MakeConst(static_cast<int64_t>(5)));
+    auto batches = exec::Execute(reader, exec::MakeFilter(exec::MakeScan(), std::move(condition)));
+
+    EXPECT_EQ(TotalRows(batches), 2);
+}
+
+TEST(Execution, PredicateMayMatchDoesNotPruneNaNChunk) {
+    core::Schema schema({core::Field("x", core::DataType::Double, true)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhWriterOptions options;
+        options.compression = util::Compression::None;
+        options.encoding = core::Encoding::Plain;
+        bruh::BruhBatchWriter writer(ss, schema, options);
+
+        core::Batch with_nan(schema);
+        with_nan.ColumnAt(0).AppendFromString(std::to_string(std::nan("")));
+        with_nan.ColumnAt(0).AppendFromString("5");
+        writer.Write(with_nan);
+        writer.Flush();
+    }
+
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+    auto condition = exec::MakeBinary(exec::BinaryFunction::Equal,
+                                      exec::MakeColumnExpr("x", core::DataType::Double),
+                                      exec::MakeConst(static_cast<int64_t>(5)));
+
+    EXPECT_TRUE(exec::PredicateMayMatch(reader, 0, *condition));
+
+    auto& stats = reader.GetColumnStatistics(0, 0);
+    EXPECT_TRUE(stats.has_min_max);
+    EXPECT_DOUBLE_EQ(stats.min_double, 5.0);
+    EXPECT_DOUBLE_EQ(stats.max_double, 5.0);
+}
+
+TEST(Execution, PredicateMayMatchPrunesAllNullChunk) {
+    core::Schema schema({core::Field("x", core::DataType::Int64, true)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhWriterOptions options;
+        options.compression = util::Compression::None;
+        options.encoding = core::Encoding::Plain;
+        bruh::BruhBatchWriter writer(ss, schema, options);
+
+        core::Batch all_null(schema);
+        all_null.ColumnAt(0).AppendNull();
+        all_null.ColumnAt(0).AppendNull();
+        writer.Write(all_null);
+        writer.Flush();
+    }
+
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+    auto condition = exec::MakeBinary(exec::BinaryFunction::Equal,
+                                      exec::MakeColumnExpr("x", core::DataType::Int64),
+                                      exec::MakeConst(static_cast<int64_t>(5)));
+
+    EXPECT_FALSE(exec::PredicateMayMatch(reader, 0, *condition));
 }
 
 TEST(ClickBenchQueries, CountStar) {
@@ -376,6 +489,28 @@ TEST(HashAggregation, GroupByStringKey) {
         } else {
             FAIL() << "unexpected key: " << key;
         }
+    }
+}
+
+TEST(HashAggregation, GroupByDictionaryStringKey) {
+    core::Schema schema({core::Field("URL", core::DataType::String)});
+    core::Batch batch(schema);
+    auto& col = batch.ColumnAt(0);
+    std::vector<std::string> values = {
+        "https://example.com/repeated/path",
+        "https://google.com/repeated/path",
+        "https://yandex.ru/repeated/path"};
+    for (size_t i = 0; i < 300; ++i) {
+        col.AppendFromString(values[i % values.size()]);
+    }
+
+    auto plan = exec::MakeHashAggregation(
+        exec::MakeScan(), exec::MakeColumnExpr("URL", core::DataType::String),
+        "URL", {exec::Count("count")});
+    auto result = RunPlanOnBatch(batch, plan);
+    ASSERT_EQ(result.RowsCount(), 3);
+    for (size_t row = 0; row < result.RowsCount(); ++row) {
+        EXPECT_EQ(result.ColumnAt(1).GetAsString(row), "100");
     }
 }
 
@@ -1000,6 +1135,30 @@ TEST(Kernel, TimestampAndLengthFunctions) {
     ASSERT_EQ(lengths->Size(), 2);
     EXPECT_EQ(lengths->GetAsString(0), "3");
     EXPECT_EQ(lengths->GetAsString(1), "0");
+}
+
+TEST(Kernel, DictionaryStringKernelsReuseDictionary) {
+    auto dict = MakeDictionaryStringColumn(
+        {"https://www.google.com/path", "http://example.org/a", "plain"},
+        {0, 1, 0, 2});
+
+    auto contains = exec::kernel::StrContains(*dict, "google", false);
+    ASSERT_EQ(contains->Size(), 4);
+    EXPECT_EQ(contains->GetAsString(0), "true");
+    EXPECT_EQ(contains->GetAsString(1), "false");
+    EXPECT_EQ(contains->GetAsString(2), "true");
+    EXPECT_EQ(contains->GetAsString(3), "false");
+
+    auto lengths = exec::kernel::StrLength(*dict);
+    EXPECT_EQ(lengths->GetAsString(0), "27");
+    EXPECT_EQ(lengths->GetAsString(2), "27");
+
+    auto captured = exec::kernel::PrefixCapture(*dict, {"https://", "http://"}, '/');
+    ASSERT_NE(dynamic_cast<core::DictionaryStringColumn*>(captured.get()), nullptr);
+    EXPECT_EQ(captured->GetAsString(0), "www.google.com");
+    EXPECT_EQ(captured->GetAsString(1), "example.org");
+    EXPECT_EQ(captured->GetAsString(2), "www.google.com");
+    EXPECT_EQ(captured->GetAsString(3), "plain");
 }
 
 TEST(ClickBenchQueries, Q18ExtractMinutePerUserAndPhrase) {
