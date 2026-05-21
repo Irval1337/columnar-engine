@@ -245,6 +245,26 @@ core::Schema BruhBatchReader::ProjectSchema(const std::vector<size_t>& column_in
     return core::Schema(std::move(fields));
 }
 
+const ColumnChunkStatistics& BruhBatchReader::GetColumnStatistics(size_t row_group, size_t column) {
+    if (row_group >= metadata_.row_groups.size()) {
+        THROW_RUNTIME_ERROR("Row group index out of range");
+    }
+    if (column >= metadata_.schema.FieldsCount()) {
+        THROW_RUNTIME_ERROR("Column index out of range");
+    }
+    auto& chunk = metadata_.row_groups[row_group].columns[column];
+    if (!chunk.statistics.has_value()) {
+        CheckMappedRange(chunk.statistics_offset, chunk.statistics_size, data_.size());
+        util::BufReader r(data_.data() + static_cast<size_t>(chunk.statistics_offset),
+                          static_cast<size_t>(chunk.statistics_size));
+        chunk.statistics = ReadColumnStatistics(r, metadata_.schema.GetFields()[column]);
+        if (r.Remaining() != 0) {
+            THROW_RUNTIME_ERROR("Column statistics size mismatch");
+        }
+    }
+    return *chunk.statistics;
+}
+
 void BruhBatchReader::ReadMetaData() {
     EnsureBruhFormat();
     size_t footer_size = sizeof(kMagicBytes) + 4;
@@ -307,10 +327,45 @@ void BruhBatchReader::ReadRowGroupsMetadata(util::BufReader& r, uint32_t cols_co
             chunk.values_count = r.Read<uint64_t>();
             chunk.encoding = static_cast<core::Encoding>(r.Read<uint8_t>());
             chunk.compression = static_cast<util::Compression>(r.Read<uint8_t>());
+            chunk.statistics_size = r.Read<uint32_t>();
+            chunk.statistics_offset = static_cast<uint64_t>(r.Pos() - data_.data());
+            r.Take(static_cast<size_t>(chunk.statistics_size));
             group.columns.emplace_back(std::move(chunk));
         }
         metadata_.row_groups.emplace_back(std::move(group));
     }
+}
+
+ColumnChunkStatistics BruhBatchReader::ReadColumnStatistics(util::BufReader& r,
+                                                            const core::Field& field) {
+    ColumnChunkStatistics statistics;
+    statistics.present = r.Read<uint8_t>() != 0;
+    if (!statistics.present) {
+        return statistics;
+    }
+    statistics.has_min_max = r.Read<uint8_t>() != 0;
+    statistics.nulls_count = r.Read<uint64_t>();
+    if (!statistics.has_min_max) {
+        return statistics;
+    }
+    switch (core::DataTypeToPhysical(field.type)) {
+        case core::PhysicalType::Double:
+            statistics.min_double = r.Read<double>();
+            statistics.max_double = r.Read<double>();
+            break;
+        case core::PhysicalType::String: {
+            auto min_len = r.Read<uint32_t>();
+            statistics.min_string = r.ReadString(min_len);
+            auto max_len = r.Read<uint32_t>();
+            statistics.max_string = r.ReadString(max_len);
+            break;
+        }
+        default:
+            statistics.min_int = r.Read<int64_t>();
+            statistics.max_int = r.Read<int64_t>();
+            break;
+    }
+    return statistics;
 }
 
 void BruhBatchReader::ReadColumn(util::BufReader& r, std::unique_ptr<core::Column>& col,

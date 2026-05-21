@@ -7,6 +7,7 @@
 #include <exec/kernel.h>
 #include <exec/operator.h>
 
+#include <cstring>
 #include <set>
 #include <memory>
 #include <sstream>
@@ -245,6 +246,44 @@ TEST(BruhBatchReader, ReadZeroColumnsReturnsEmptyBatch) {
     auto projected = reader.ReadRowGroup(0, std::vector<size_t>{});
     EXPECT_EQ(projected.ColumnsCount(), 0);
     EXPECT_EQ(projected.RowsCount(), 0);
+}
+
+TEST(Execution, FilterSkipsRowGroupsByStatistics) {
+    core::Schema schema({core::Field("x", core::DataType::Int64)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhWriterOptions options;
+        options.compression = util::Compression::None;
+        options.encoding = core::Encoding::Plain;
+        bruh::BruhBatchWriter writer(ss, schema, options);
+
+        core::Batch skipped(schema);
+        skipped.ColumnAt(0).AppendFromString("1");
+        skipped.ColumnAt(0).AppendFromString("2");
+        writer.Write(skipped);
+
+        core::Batch matched(schema);
+        matched.ColumnAt(0).AppendFromString("5");
+        matched.ColumnAt(0).AppendFromString("5");
+        writer.Write(matched);
+        writer.Flush();
+    }
+
+    auto buf = ss.str();
+    bruh::BruhBatchReader metadata_reader(AsBytes(buf));
+    auto& chunk = metadata_reader.GetMetaData().row_groups[0].columns[0];
+    int64_t poison = 5;
+    auto offset = static_cast<size_t>(chunk.offset);
+    std::memcpy(buf.data() + offset, &poison, sizeof(poison));
+    std::memcpy(buf.data() + offset + sizeof(poison), &poison, sizeof(poison));
+
+    bruh::BruhBatchReader reader(AsBytes(buf));
+    auto condition = exec::MakeBinary(exec::BinaryFunction::Equal,
+                                      exec::MakeColumnExpr("x", core::DataType::Int64),
+                                      exec::MakeConst(static_cast<int64_t>(5)));
+    auto batches = exec::Execute(reader, exec::MakeFilter(exec::MakeScan(), std::move(condition)));
+
+    EXPECT_EQ(TotalRows(batches), 2);
 }
 
 TEST(ClickBenchQueries, CountStar) {
