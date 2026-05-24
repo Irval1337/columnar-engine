@@ -23,6 +23,7 @@ add_library(columnar_lib
   src/util/memory_mapped_file.cpp
   src/util/compression.cpp
   src/util/date_time.cpp
+  src/util/string_arena.cpp
   src/csv/csv_batch_reader.cpp
   src/csv/csv_batch_writer.cpp
   src/csv/csv_row_reader.cpp

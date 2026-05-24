@@ -66,8 +66,8 @@ bool RequiresDenseBatch(const std::vector<ProjectionUnit>& keys,
 }  // namespace
 
 HashAggregationSink::CompositeKeyStorage::CompositeKeyStorage(
-    const std::vector<ProjectionUnit>& keys)
-    : groups_(0, GroupHash{this}, GroupEq{this}) {
+    const std::vector<ProjectionUnit>& keys, util::StringArena& arena)
+    : arena_(arena), groups_(0, GroupHash{this}, GroupEq{this}) {
     part_kinds_.reserve(keys.size());
     int_group_keys_.resize(keys.size());
     string_group_keys_.resize(keys.size());
@@ -98,7 +98,7 @@ void HashAggregationSink::CompositeKeyStorage::InsertGroup(uint32_t group_id, co
     for (size_t i = 0; i < part_kinds_.size(); ++i) {
         if (part_kinds_[i] == PartKind::String) {
             auto value = key.batch->ReadString(i, key.row);
-            string_group_keys_[i].emplace_back(value);
+            string_group_keys_[i].push_back(arena_.Intern(value));
         } else {
             int_group_keys_[i].push_back(key.batch->ReadInt(i, key.row));
         }
@@ -143,8 +143,7 @@ bool HashAggregationSink::CompositeKeyStorage::GroupEqualsProbe(
     }
     for (size_t i = 0; i < part_kinds_.size(); ++i) {
         if (part_kinds_[i] == PartKind::String) {
-            auto stored_value = std::string_view(string_group_keys_[i][group_id]);
-            if (stored_value != key.batch->ReadString(i, key.row)) {
+            if (string_group_keys_[i][group_id] != key.batch->ReadString(i, key.row)) {
                 return false;
             }
         } else if (int_group_keys_[i][group_id] != key.batch->ReadInt(i, key.row)) {
@@ -297,7 +296,7 @@ HashAggregationSink::HashAggregationSink(IOperator& downstream, std::vector<Proj
       output_schema_(MakeHashAggregateSchema(keys_, aggregations_)),
       mode_(SelectKeyMode(keys_)),
       needs_dense_(RequiresDenseBatch(keys_, aggregations_)),
-      composite_keys_(keys_) {
+      composite_keys_(keys_, string_arena_) {
     agg_arrays_.reserve(aggregations_.size());
     for (auto& unit : aggregations_) {
         switch (unit.type) {
@@ -343,8 +342,7 @@ uint32_t HashAggregationSink::EmplaceGroup() {
     return group_id;
 }
 
-void HashAggregationSink::ReserveStringGroupsForBatch(size_t selected_rows,
-                                                      size_t max_new_groups) {
+void HashAggregationSink::ReserveStringGroupsForBatch(size_t selected_rows, size_t max_new_groups) {
     if (selected_rows == 0 || max_new_groups == 0) {
         return;
     }
@@ -414,7 +412,11 @@ void HashAggregationSink::UpdateAggsForRow(uint32_t group_id,
             case AggregationType::Distinct: {
                 auto& array = std::get<DistinctArray>(agg_arrays_[i]);
                 if (array.is_string) {
-                    array.strings[group_id].emplace(ReadStringRow(col, row));
+                    auto value = ReadStringRow(col, row);
+                    auto& set = array.strings[group_id];
+                    if (!set.contains(value)) {
+                        set.insert(string_arena_.Intern(value));
+                    }
                 } else {
                     array.ints[group_id].insert(ReadIntegerRow(col, row));
                 }
@@ -549,9 +551,10 @@ void HashAggregationSink::ConsumeString(const core::Column& key_col,
         auto it = string_groups_.find(key);
         uint32_t group_id;
         if (it == string_groups_.end()) {
+            auto interned = string_arena_.Intern(key);
             group_id = EmplaceGroup();
-            string_groups_.emplace(std::string(key), group_id);
-            string_group_keys_.emplace_back(key);
+            string_groups_.emplace(interned, group_id);
+            string_group_keys_.push_back(interned);
         } else {
             group_id = it->second;
         }
@@ -574,9 +577,10 @@ void HashAggregationSink::ConsumeDictionaryString(const core::DictionaryStringCo
         auto key = key_col.DictValue(local_id);
         auto it = string_groups_.find(key);
         if (it == string_groups_.end()) {
+            auto interned = string_arena_.Intern(key);
             group_id = EmplaceGroup();
-            string_groups_.emplace(std::string(key), group_id);
-            string_group_keys_.emplace_back(key);
+            string_groups_.emplace(interned, group_id);
+            string_group_keys_.push_back(interned);
         } else {
             group_id = it->second;
         }
@@ -677,8 +681,7 @@ void HashAggregationSink::Consume(core::Batch batch) {
     const std::vector<uint32_t>* selection = batch.HasSelection() ? &batch.Selection() : nullptr;
     if (mode_ == KeyMode::String) {
         if (auto* dict = dynamic_cast<const core::DictionaryStringColumn*>(key_cols[0])) {
-            ReserveStringGroupsForBatch(selected_rows,
-                                        std::min(selected_rows, dict->DictSize()));
+            ReserveStringGroupsForBatch(selected_rows, std::min(selected_rows, dict->DictSize()));
         }
     }
 

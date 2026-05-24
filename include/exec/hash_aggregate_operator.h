@@ -5,6 +5,7 @@
 #include <core/schema.h>
 #include <exec/aggregation.h>
 #include <exec/operator.h>
+#include <util/string_arena.h>
 
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
@@ -13,7 +14,6 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -44,32 +44,6 @@ private:
 
     struct Int64PairHash {
         size_t operator()(const Int64Pair& key) const noexcept;
-    };
-
-    struct StringHash {
-        using is_transparent = void;  // NOLINT(readability-identifier-naming)
-        size_t operator()(std::string_view s) const noexcept {
-            return std::hash<std::string_view>{}(s);
-        }
-        size_t operator()(const std::string& s) const noexcept {
-            return std::hash<std::string_view>{}(s);
-        }
-    };
-
-    struct StringEq {
-        using is_transparent = void;  // NOLINT(readability-identifier-naming)
-        bool operator()(std::string_view a, std::string_view b) const noexcept {
-            return a == b;
-        }
-        bool operator()(const std::string& a, std::string_view b) const noexcept {
-            return a == b;
-        }
-        bool operator()(std::string_view a, const std::string& b) const noexcept {
-            return a == b;
-        }
-        bool operator()(const std::string& a, const std::string& b) const noexcept {
-            return a == b;
-        }
     };
 
     struct CountArray {
@@ -156,8 +130,8 @@ private:
 
     struct DistinctArray {
         bool is_string = false;
-        std::vector<std::unordered_set<int64_t>> ints;
-        std::vector<std::unordered_set<std::string>> strings;
+        std::vector<absl::flat_hash_set<int64_t>> ints;
+        std::vector<absl::flat_hash_set<std::string_view>> strings;
 
         void Reserve(size_t n) {
             if (is_string) {
@@ -178,7 +152,7 @@ private:
     using AggArray = std::variant<CountArray, SumArray, AvgArray, MinMaxArray, DistinctArray>;
 
     using Int64Groups = absl::flat_hash_map<int64_t, uint32_t>;
-    using StringGroups = absl::flat_hash_map<std::string, uint32_t, StringHash, StringEq>;
+    using StringGroups = absl::flat_hash_map<std::string_view, uint32_t>;
     using Int64PairGroups = absl::flat_hash_map<Int64Pair, uint32_t, Int64PairHash>;
 
     struct CompositeKeyStorage {
@@ -204,7 +178,7 @@ private:
             size_t hash = 0;
         };
 
-        explicit CompositeKeyStorage(const std::vector<ProjectionUnit>& keys);
+        CompositeKeyStorage(const std::vector<ProjectionUnit>& keys, util::StringArena& arena);
 
         CompositeKeyStorage(const CompositeKeyStorage&) = delete;
         CompositeKeyStorage& operator=(const CompositeKeyStorage&) = delete;
@@ -242,9 +216,10 @@ private:
         bool GroupEqualsProbe(uint32_t group_id, const ProbeKey& key) const noexcept;
         bool ProbesEqual(const ProbeKey& lhs, const ProbeKey& rhs) const noexcept;
 
+        util::StringArena& arena_;
         std::vector<PartKind> part_kinds_;
         std::vector<std::vector<int64_t>> int_group_keys_;
-        std::vector<std::vector<std::string>> string_group_keys_;
+        std::vector<std::vector<std::string_view>> string_group_keys_;
         std::vector<size_t> group_hashes_;
         Groups groups_;
     };
@@ -283,9 +258,10 @@ private:
     uint32_t groups_count_ = 0;
     size_t input_rows_seen_ = 0;
     size_t reserved_groups_ = 0;
+    util::StringArena string_arena_;
     std::vector<AggArray> agg_arrays_;
     std::vector<int64_t> int64_group_keys_;
-    std::vector<std::string> string_group_keys_;
+    std::vector<std::string_view> string_group_keys_;
     std::vector<Int64Pair> int64_pair_group_keys_;
     CompositeKeyStorage composite_keys_;
     Int64Groups int64_groups_;
