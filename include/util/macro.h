@@ -14,6 +14,8 @@
     do {                                                                                      \
         if (!(cond)) {                                                                        \
             throw std::runtime_error(std::string(__FILE__) + ":" + std::to_string(__LINE__) + \
-                                     ": condition '" + #cond + "' is not satisfied");        \
+                                     ": condition '" + #cond + "' is not satisfied");         \
         }                                                                                     \
     } while (false)
+
+#define UNUSED(x) static_cast<void>(x)

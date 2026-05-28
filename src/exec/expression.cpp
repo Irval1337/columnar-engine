@@ -1,8 +1,11 @@
-#include <exec/expression.h>
+#include <exec/expression/types.h>
+#include <exec/expression/eval.h>
 #include <core/columns/bool_column.h>
 #include <core/columns/dictionary_string_column.h>
 #include <core/columns/string_column.h>
-#include <exec/column_helpers.h>
+#include <exec/column_row_access.h>
+#include <exec/selection.h>
+#include <exec/expression/utils.h>
 #include <exec/kernel.h>
 #include <util/macro.h>
 
@@ -87,31 +90,6 @@ std::unique_ptr<core::Column> EvalBinary(const core::Column& lhs, const core::Co
             return kernel::Multiply(lhs, rhs);
     }
     THROW_RUNTIME_ERROR("Unsupported binary function");
-}
-
-bool IsComparisonFunction(BinaryFunction f) {
-    return f == BinaryFunction::Equal || f == BinaryFunction::NotEqual ||
-           f == BinaryFunction::Less || f == BinaryFunction::LessOrEqual ||
-           f == BinaryFunction::Greater || f == BinaryFunction::GreaterOrEqual;
-}
-
-bool IsConstExpression(const Expression& expr) {
-    return expr.type == ExpressionType::ConstInt64 || expr.type == ExpressionType::ConstString;
-}
-
-BinaryFunction FlipComparison(BinaryFunction f) {
-    switch (f) {
-        case BinaryFunction::Less:
-            return BinaryFunction::Greater;
-        case BinaryFunction::LessOrEqual:
-            return BinaryFunction::GreaterOrEqual;
-        case BinaryFunction::Greater:
-            return BinaryFunction::Less;
-        case BinaryFunction::GreaterOrEqual:
-            return BinaryFunction::LessOrEqual;
-        default:
-            return f;
-    }
 }
 
 std::unique_ptr<core::Column> EvalIntConstCompare(const core::Column& col, int64_t value,
@@ -207,7 +185,7 @@ bool CompareValues(T lhs, T rhs, BinaryFunction function) {
 }
 
 void PrepareDictionaryTerm(StringCompareTerm& term) {
-    term.dict_col = dynamic_cast<const core::DictionaryStringColumn*>(term.col);
+    term.dict_col = core::AsDictionaryString(term.col);
     if (term.dict_col == nullptr) {
         return;
     }
@@ -219,7 +197,7 @@ void PrepareDictionaryTerm(StringCompareTerm& term) {
 }
 
 void PrepareDictionaryTerm(ContainsTerm& term) {
-    term.dict_col = dynamic_cast<const core::DictionaryStringColumn*>(term.col);
+    term.dict_col = core::AsDictionaryString(term.col);
     if (term.dict_col == nullptr) {
         return;
     }
@@ -488,12 +466,13 @@ EvalResult Evaluate(const core::Batch& batch, const Expression& expr) {
     size_t rows = batch.RowsCount();
     switch (expr.type) {
         case ExpressionType::ConstInt64:
-            return kernel::ConstInt64(static_cast<const ConstInt64&>(expr).value, rows);
+            return EvalResult(kernel::ConstInt64(static_cast<const ConstInt64&>(expr).value, rows));
         case ExpressionType::ConstString:
-            return kernel::ConstString(static_cast<const ConstString&>(expr).value, rows);
+            return EvalResult(
+                kernel::ConstString(static_cast<const ConstString&>(expr).value, rows));
         case ExpressionType::Column: {
             auto& column_expr = static_cast<const ColumnExpr&>(expr);
-            return batch.ColumnAt(batch.GetSchema().GetIndex(column_expr.name));
+            return EvalResult(batch.ColumnAt(batch.GetSchema().GetIndex(column_expr.name)));
         }
         case ExpressionType::Binary: {
             auto& binary = static_cast<const BinaryExpr&>(expr);
@@ -502,17 +481,18 @@ EvalResult Evaluate(const core::Batch& batch, const Expression& expr) {
             }
             auto lhs = Evaluate(batch, *binary.lhs);
             auto rhs = Evaluate(batch, *binary.rhs);
-            return EvalBinary(lhs.Get(), rhs.Get(), binary.function);
+            return EvalResult(EvalBinary(lhs.Get(), rhs.Get(), binary.function));
         }
         case ExpressionType::Contains: {
             auto& contains = static_cast<const ContainsExpr&>(expr);
             auto operand = Evaluate(batch, *contains.expr);
-            return kernel::StrContains(operand.Get(), contains.substring, contains.negated);
+            return EvalResult(
+                kernel::StrContains(operand.Get(), contains.substring, contains.negated));
         }
         case ExpressionType::Function: {
             auto& function = static_cast<const FunctionExpr&>(expr);
             auto arg = Evaluate(batch, *function.arg);
-            return EvalFunction(arg.Get(), function.function);
+            return EvalResult(EvalFunction(arg.Get(), function.function));
         }
         case ExpressionType::Case: {
             auto& case_expr = static_cast<const CaseExpr&>(expr);
@@ -520,19 +500,20 @@ EvalResult Evaluate(const core::Batch& batch, const Expression& expr) {
             auto when_true = Evaluate(batch, *case_expr.when_true);
             auto when_false = Evaluate(batch, *case_expr.when_false);
             const auto& mask = static_cast<const core::BoolColumn&>(cond.Get());
-            return kernel::CaseSelect(mask, when_true.Get(), when_false.Get());
+            return EvalResult(kernel::CaseSelect(mask, when_true.Get(), when_false.Get()));
         }
         case ExpressionType::RegexReplace: {
             auto& regex_replace = static_cast<const RegexReplaceExpr&>(expr);
             auto arg = Evaluate(batch, *regex_replace.arg);
-            return kernel::RegexReplace(arg.Get(), regex_replace.regex, regex_replace.replacement);
+            return EvalResult(
+                kernel::RegexReplace(arg.Get(), regex_replace.regex, regex_replace.replacement));
         }
         case ExpressionType::PrefixCapture: {
             auto& prefix_capture = static_cast<const PrefixCaptureExpr&>(expr);
             auto arg = Evaluate(batch, *prefix_capture.arg);
-            return kernel::PrefixCapture(arg.Get(), prefix_capture.prefixes,
-                                         prefix_capture.delimiter, prefix_capture.require_non_empty,
-                                         prefix_capture.single_line_tail);
+            return EvalResult(kernel::PrefixCapture(
+                arg.Get(), prefix_capture.prefixes, prefix_capture.delimiter,
+                prefix_capture.require_non_empty, prefix_capture.single_line_tail));
         }
     }
     THROW_RUNTIME_ERROR("Unsupported expression type");

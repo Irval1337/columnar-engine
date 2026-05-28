@@ -166,10 +166,10 @@ ColumnChunkStatistics BuildCharStatistics(const core::Column& col) {
 }
 
 std::string_view ReadString(const core::Column& col, size_t row) {
-    if (auto* string_col = dynamic_cast<const core::StringColumn*>(&col)) {
+    if (auto* string_col = core::AsString(col)) {
         return string_col->Get(row);
     }
-    if (auto* dict_col = dynamic_cast<const core::DictionaryStringColumn*>(&col)) {
+    if (auto* dict_col = core::AsDictionaryString(col)) {
         return dict_col->Get(row);
     }
     THROW_RUNTIME_ERROR("Expected string column");
@@ -179,7 +179,7 @@ ColumnChunkStatistics BuildStringStatistics(const core::Column& col) {
     ColumnChunkStatistics statistics;
     statistics.present = true;
     if (col.IsNullable()) {
-        if (auto* string_col = dynamic_cast<const core::StringColumn*>(&col)) {
+        if (auto* string_col = core::AsString(col)) {
             statistics.nulls_count = string_col->GetNullMask().PopCount();
         } else {
             auto& dict_col = static_cast<const core::DictionaryStringColumn&>(col);
@@ -340,8 +340,8 @@ void EncodeBool(util::BufWriter& w, const core::Column& col, bool nullable,
 
 void EncodeString(util::BufWriter& w, const core::Column& col, bool nullable,
                   core::Encoding encoding, const core::encoding::AutoEncoding& auto_encoding) {
-    auto* stringcol = dynamic_cast<const core::StringColumn*>(&col);
-    auto* dictcol = dynamic_cast<const core::DictionaryStringColumn*>(&col);
+    auto* stringcol = core::AsString(col);
+    auto* dictcol = core::AsDictionaryString(col);
     if (stringcol == nullptr && dictcol == nullptr) {
         THROW_RUNTIME_ERROR("Encoding string column expected a string implementation");
     }

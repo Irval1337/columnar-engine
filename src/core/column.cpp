@@ -26,6 +26,7 @@ std::unique_ptr<Column> MakeColumn(DataType type, bool nullable) {
         case DataType::Char:
             return std::make_unique<CharColumn>(nullable);
     }
-    THROW_NOT_IMPLEMENTED;
+    THROW_RUNTIME_ERROR("MakeColumn: unsupported DataType " +
+                        std::to_string(static_cast<int>(type)));
 }
 }  // namespace columnar::core

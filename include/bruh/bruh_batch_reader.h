@@ -67,7 +67,7 @@ private:
 
     void ReadRowGroupsMetadata(util::BufReader& r, uint32_t cols_count);
 
-    ColumnChunkStatistics ReadColumnStatistics(util::BufReader& r, const core::Field& field);
+    static ColumnChunkStatistics ReadColumnStatistics(util::BufReader& r, const core::Field& field);
 
     void ReadColumn(util::BufReader& r, std::unique_ptr<core::Column>& col,
                     const core::Field& field, const ColumnChunkMetaData& chunk);

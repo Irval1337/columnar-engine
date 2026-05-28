@@ -3,15 +3,26 @@
 #include <core/datatype.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
 namespace columnar::core {
+enum class ColumnKind : uint8_t {
+    Numeric,
+    Bool,
+    Char,
+    String,
+    DictionaryString,
+};
+
 class Column {
 public:
     virtual ~Column() = default;
 
     virtual DataType GetDataType() const = 0;
+
+    virtual ColumnKind GetKind() const = 0;
 
     virtual size_t Size() const = 0;
 

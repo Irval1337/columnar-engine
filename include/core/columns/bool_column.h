@@ -23,6 +23,10 @@ public:
         return DataType::Bool;
     }
 
+    ColumnKind GetKind() const override {
+        return ColumnKind::Bool;
+    }
+
     size_t Size() const override {
         return size_;
     }

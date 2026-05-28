@@ -189,7 +189,8 @@ core::Batch BruhBatchReader::ReadRowGroup(size_t i) {
 
 core::Batch BruhBatchReader::ReadRowGroup(size_t i, const std::vector<size_t>& column_indexes) {
     if (i >= metadata_.row_groups.size()) {
-        THROW_RUNTIME_ERROR("Row group index out of range");
+        THROW_RUNTIME_ERROR("Row group index " + std::to_string(i) + " out of range [0, " +
+                            std::to_string(metadata_.row_groups.size()) + ")");
     }
 
     auto& group = metadata_.row_groups[i];
@@ -200,7 +201,8 @@ core::Batch BruhBatchReader::ReadRowGroup(size_t i, const std::vector<size_t>& c
     for (size_t out_col = 0; out_col < column_indexes.size(); ++out_col) {
         size_t col = column_indexes[out_col];
         if (col >= schema.FieldsCount()) {
-            THROW_RUNTIME_ERROR("Column index out of range");
+            THROW_RUNTIME_ERROR("Column index " + std::to_string(col) + " out of range [0, " +
+                                std::to_string(schema.FieldsCount()) + ")");
         }
         auto& chunk = group.columns[col];
         uint64_t mapped_size = chunk.compression == util::Compression::None
@@ -238,7 +240,8 @@ core::Schema BruhBatchReader::ProjectSchema(const std::vector<size_t>& column_in
     auto& schema_fields = metadata_.schema.GetFields();
     for (size_t col : column_indexes) {
         if (col >= schema_fields.size()) {
-            THROW_RUNTIME_ERROR("Column index out of range");
+            THROW_RUNTIME_ERROR("Column index " + std::to_string(col) + " out of range [0, " +
+                                std::to_string(schema_fields.size()) + ")");
         }
         fields.push_back(schema_fields[col]);
     }
@@ -247,10 +250,12 @@ core::Schema BruhBatchReader::ProjectSchema(const std::vector<size_t>& column_in
 
 const ColumnChunkStatistics& BruhBatchReader::GetColumnStatistics(size_t row_group, size_t column) {
     if (row_group >= metadata_.row_groups.size()) {
-        THROW_RUNTIME_ERROR("Row group index out of range");
+        THROW_RUNTIME_ERROR("Row group index " + std::to_string(row_group) + " out of range [0, " +
+                            std::to_string(metadata_.row_groups.size()) + ")");
     }
     if (column >= metadata_.schema.FieldsCount()) {
-        THROW_RUNTIME_ERROR("Column index out of range");
+        THROW_RUNTIME_ERROR("Column index " + std::to_string(column) + " out of range [0, " +
+                            std::to_string(metadata_.schema.FieldsCount()) + ")");
     }
     auto& chunk = metadata_.row_groups[row_group].columns[column];
     if (!chunk.statistics.has_value()) {
@@ -279,7 +284,8 @@ void BruhBatchReader::ReadMetaData() {
     util::BufReader r(data_.data() + meta_offset, meta_size);
     metadata_.version = r.Read<int>();
     if (metadata_.version != kCurrentVersion) {
-        THROW_RUNTIME_ERROR("File version mismatch");
+        THROW_RUNTIME_ERROR("File version mismatch: expected " + std::to_string(kCurrentVersion) +
+                            ", got " + std::to_string(metadata_.version));
     }
     uint32_t cols_count = r.Read<uint32_t>();
     ReadSchema(r, cols_count);

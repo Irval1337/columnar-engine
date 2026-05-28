@@ -1,6 +1,6 @@
 #include <exec/filter_operator.h>
 
-#include <exec/expression.h>
+#include <exec/expression/eval.h>
 
 namespace columnar::exec {
 void FilterSink::Consume(core::Batch batch) {

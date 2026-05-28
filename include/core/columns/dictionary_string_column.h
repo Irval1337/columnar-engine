@@ -19,11 +19,8 @@ public:
     DictionaryStringColumn(bool nullable = false) : dict_offsets_(1, 0), nullable_(nullable) {
     }
 
-    DictionaryStringColumn(std::vector<char>&& dict_data,
-                           std::vector<size_t>&& dict_offsets,
-                           std::vector<uint32_t>&& ids,
-                           util::BitVector&& is_null,
-                           bool nullable)
+    DictionaryStringColumn(std::vector<char>&& dict_data, std::vector<size_t>&& dict_offsets,
+                           std::vector<uint32_t>&& ids, util::BitVector&& is_null, bool nullable)
         : dict_data_(std::move(dict_data)),
           dict_offsets_(std::move(dict_offsets)),
           ids_(std::move(ids)),
@@ -34,6 +31,10 @@ public:
 
     DataType GetDataType() const override {
         return DataType::String;
+    }
+
+    ColumnKind GetKind() const override {
+        return ColumnKind::DictionaryString;
     }
 
     size_t Size() const override {
@@ -201,4 +202,15 @@ private:
     util::BitVector is_null_;
     uint32_t empty_id_ = kNoEmptyId;
 };
+
+inline const DictionaryStringColumn* AsDictionaryString(const Column& col) noexcept {
+    if (col.GetKind() != ColumnKind::DictionaryString) {
+        return nullptr;
+    }
+    return static_cast<const DictionaryStringColumn*>(&col);
+}
+
+inline const DictionaryStringColumn* AsDictionaryString(const Column* col) noexcept {
+    return col != nullptr ? AsDictionaryString(*col) : nullptr;
+}
 }  // namespace columnar::core

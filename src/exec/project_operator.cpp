@@ -1,23 +1,16 @@
 #include <exec/project_operator.h>
 
 #include <core/field.h>
-#include <exec/column_helpers.h>
-#include <exec/expression.h>
+#include <exec/column_row_access.h>
+#include <exec/expression/types.h>
+#include <exec/expression/eval.h>
+#include <exec/expression/utils.h>
 #include <exec/kernel.h>
 
 #include <utility>
 
 namespace columnar::exec {
 namespace {
-bool RequiresDenseBatch(const std::vector<ProjectionUnit>& projections) {
-    for (auto& unit : projections) {
-        if (!IsTrivialExpression(*unit.expression)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 bool ProjectionNullable(const ProjectionUnit& unit, const core::Schema& input_schema) {
     if (unit.expression->type == ExpressionType::Column) {
         auto& column = static_cast<const ColumnExpr&>(*unit.expression);

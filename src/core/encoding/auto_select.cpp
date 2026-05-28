@@ -204,7 +204,7 @@ AutoEncoding SelectEncoding(const Column& col, const Field& field) {
             result.encoding = PickCharEncoding(static_cast<const CharColumn&>(col));
             return result;
         case DataType::String:
-            if (dynamic_cast<const DictionaryStringColumn*>(&col) != nullptr) {
+            if (AsDictionaryString(col) != nullptr) {
                 result.encoding = Encoding::Dictionary;
             } else {
                 PickStringEncoding(static_cast<const StringColumn&>(col), result);

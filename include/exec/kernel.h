@@ -56,8 +56,7 @@ std::unique_ptr<core::Column> RegexReplace(const core::Column& operand, const RE
                                            const std::string& replacement);
 std::unique_ptr<core::Column> PrefixCapture(const core::Column& operand,
                                             const std::vector<std::string>& prefixes,
-                                            char delimiter,
-                                            bool require_non_empty = true,
+                                            char delimiter, bool require_non_empty = true,
                                             bool single_line_tail = true);
 
 std::unique_ptr<core::Column> CaseSelect(const core::BoolColumn& mask,

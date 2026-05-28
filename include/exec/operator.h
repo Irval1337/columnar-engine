@@ -4,7 +4,7 @@
 #include <core/batch.h>
 #include <core/schema.h>
 #include <exec/aggregation.h>
-#include <exec/expression.h>
+#include <exec/expression/types.h>
 
 #include <memory>
 #include <optional>
@@ -40,7 +40,8 @@ private:
 enum class OperatorType {
     Scan,
     CountTable,
-    Aggregation,
+    GlobalAggregation,
+    HashAggregation,
     Filter,
     Project,
     TopN,
@@ -65,63 +66,67 @@ struct Operator {
     OperatorType type;
 };
 
-struct ScanOperator final : public Operator {
-    ScanOperator() : Operator(OperatorType::Scan) {
+template <OperatorType Kind>
+struct TypedOperator : public Operator {
+    TypedOperator() : Operator(Kind) {
     }
+};
 
+struct ScanOperator final : public TypedOperator<OperatorType::Scan> {
     core::Schema schema;
 };
 
-struct CountTableOperator final : public Operator {
+struct CountTableOperator final : public TypedOperator<OperatorType::CountTable> {
     explicit CountTableOperator(std::string output_name = "count")
-        : Operator(OperatorType::CountTable), output_name(std::move(output_name)) {
+        : output_name(std::move(output_name)) {
     }
 
     std::string output_name;
 };
 
-struct AggregationOperator final : public Operator {
-    AggregationOperator(std::shared_ptr<Operator> child, std::vector<ProjectionUnit> keys,
-                        std::vector<AggregationUnit> aggregations)
-        : Operator(OperatorType::Aggregation),
-          child(std::move(child)),
-          keys(std::move(keys)),
-          aggregations(std::move(aggregations)) {
+struct GlobalAggregationOperator final : public TypedOperator<OperatorType::GlobalAggregation> {
+    GlobalAggregationOperator(std::shared_ptr<Operator> child,
+                              std::vector<AggregationUnit> aggregations)
+        : child(std::move(child)), aggregations(std::move(aggregations)) {
     }
 
     std::shared_ptr<Operator> child;
-    std::vector<ProjectionUnit> keys;  // empty => global aggregation
     std::vector<AggregationUnit> aggregations;
 };
 
-struct FilterOperator final : public Operator {
+struct HashAggregationOperator final : public TypedOperator<OperatorType::HashAggregation> {
+    HashAggregationOperator(std::shared_ptr<Operator> child, std::vector<ProjectionUnit> keys,
+                            std::vector<AggregationUnit> aggregations)
+        : child(std::move(child)), keys(std::move(keys)), aggregations(std::move(aggregations)) {
+    }
+
+    std::shared_ptr<Operator> child;
+    std::vector<ProjectionUnit> keys;
+    std::vector<AggregationUnit> aggregations;
+};
+
+struct FilterOperator final : public TypedOperator<OperatorType::Filter> {
     FilterOperator(std::shared_ptr<Operator> child, std::shared_ptr<Expression> condition)
-        : Operator(OperatorType::Filter), child(std::move(child)), condition(std::move(condition)) {
+        : child(std::move(child)), condition(std::move(condition)) {
     }
 
     std::shared_ptr<Operator> child;
     std::shared_ptr<Expression> condition;
 };
 
-struct ProjectOperator final : public Operator {
+struct ProjectOperator final : public TypedOperator<OperatorType::Project> {
     ProjectOperator(std::shared_ptr<Operator> child, std::vector<ProjectionUnit> projections)
-        : Operator(OperatorType::Project),
-          child(std::move(child)),
-          projections(std::move(projections)) {
+        : child(std::move(child)), projections(std::move(projections)) {
     }
 
     std::shared_ptr<Operator> child;
     std::vector<ProjectionUnit> projections;
 };
 
-struct TopNOperator final : public Operator {
+struct TopNOperator final : public TypedOperator<OperatorType::TopN> {
     TopNOperator(std::shared_ptr<Operator> child, std::vector<SortUnit> sort_units,
                  std::optional<size_t> limit, std::optional<size_t> offset)
-        : Operator(OperatorType::TopN),
-          child(std::move(child)),
-          sort_units(std::move(sort_units)),
-          limit(limit),
-          offset(offset) {
+        : child(std::move(child)), sort_units(std::move(sort_units)), limit(limit), offset(offset) {
     }
 
     std::shared_ptr<Operator> child;
@@ -138,16 +143,9 @@ inline std::shared_ptr<CountTableOperator> MakeCountTable(std::string output_nam
     return std::make_shared<CountTableOperator>(std::move(output_name));
 }
 
-inline std::shared_ptr<AggregationOperator> MakeAggregation(
-    std::shared_ptr<Operator> child, std::vector<ProjectionUnit> keys,
-    std::vector<AggregationUnit> aggregations) {
-    return std::make_shared<AggregationOperator>(std::move(child), std::move(keys),
-                                                 std::move(aggregations));
-}
-
-inline std::shared_ptr<AggregationOperator> MakeGlobalAggregation(
+inline std::shared_ptr<GlobalAggregationOperator> MakeGlobalAggregation(
     std::shared_ptr<Operator> child, std::vector<AggregationUnit> aggregations) {
-    return MakeAggregation(std::move(child), {}, std::move(aggregations));
+    return std::make_shared<GlobalAggregationOperator>(std::move(child), std::move(aggregations));
 }
 
 inline std::shared_ptr<FilterOperator> MakeFilter(std::shared_ptr<Operator> child,
@@ -160,18 +158,19 @@ inline std::shared_ptr<ProjectOperator> MakeProject(std::shared_ptr<Operator> ch
     return std::make_shared<ProjectOperator>(std::move(child), std::move(projections));
 }
 
-inline std::shared_ptr<AggregationOperator> MakeHashAggregation(
+inline std::shared_ptr<HashAggregationOperator> MakeHashAggregation(
     std::shared_ptr<Operator> child, std::vector<ProjectionUnit> keys,
     std::vector<AggregationUnit> aggregations) {
-    return MakeAggregation(std::move(child), std::move(keys), std::move(aggregations));
+    return std::make_shared<HashAggregationOperator>(std::move(child), std::move(keys),
+                                                     std::move(aggregations));
 }
 
-inline std::shared_ptr<AggregationOperator> MakeHashAggregation(
+inline std::shared_ptr<HashAggregationOperator> MakeHashAggregation(
     std::shared_ptr<Operator> child, std::shared_ptr<Expression> key, std::string key_name,
     std::vector<AggregationUnit> aggregations) {
     std::vector<ProjectionUnit> keys;
     keys.push_back(ProjectionUnit{std::move(key), std::move(key_name)});
-    return MakeAggregation(std::move(child), std::move(keys), std::move(aggregations));
+    return MakeHashAggregation(std::move(child), std::move(keys), std::move(aggregations));
 }
 
 inline std::shared_ptr<TopNOperator> MakeTopN(std::shared_ptr<Operator> child,

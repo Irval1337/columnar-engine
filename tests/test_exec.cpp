@@ -4,6 +4,8 @@
 #include <core/columns/string_column.h>
 #include <core/columns/timestamp_column.h>
 #include <exec/clickbench.h>
+#include <exec/expression/builders.h>
+#include <exec/expression/eval.h>
 #include <exec/kernel.h>
 #include <exec/metadata_pruning.h>
 #include <exec/operator.h>
@@ -205,8 +207,7 @@ core::Batch RunPlanOnBatch(const core::Batch& batch, std::shared_ptr<exec::Opera
 }
 
 std::unique_ptr<core::DictionaryStringColumn> MakeDictionaryStringColumn(
-    std::vector<std::string_view> dict_values,
-    std::vector<uint32_t> ids) {
+    std::vector<std::string_view> dict_values, std::vector<uint32_t> ids) {
     std::vector<char> data;
     std::vector<size_t> offsets;
     offsets.reserve(dict_values.size() + 1);
@@ -215,8 +216,8 @@ std::unique_ptr<core::DictionaryStringColumn> MakeDictionaryStringColumn(
         data.insert(data.end(), value.begin(), value.end());
         offsets.push_back(data.size());
     }
-    return std::make_unique<core::DictionaryStringColumn>(
-        std::move(data), std::move(offsets), std::move(ids), util::BitVector(), false);
+    return std::make_unique<core::DictionaryStringColumn>(std::move(data), std::move(offsets),
+                                                          std::move(ids), util::BitVector(), false);
 }
 
 size_t TotalRows(const std::vector<core::Batch>& batches) {
@@ -362,12 +363,11 @@ TEST(FilterOperator, FusedAndInAndContains) {
         exec::MakeBinary(exec::BinaryFunction::Equal, traffic, exec::MakeConst(int64_t{6})));
     auto condition = exec::MakeBinary(
         exec::BinaryFunction::And,
-        exec::MakeBinary(
-            exec::BinaryFunction::And,
-            exec::MakeBinary(exec::BinaryFunction::Equal,
-                             exec::MakeColumnExpr("CounterID", core::DataType::Int64),
-                             exec::MakeConst(int64_t{62})),
-            std::move(in_traffic)),
+        exec::MakeBinary(exec::BinaryFunction::And,
+                         exec::MakeBinary(exec::BinaryFunction::Equal,
+                                          exec::MakeColumnExpr("CounterID", core::DataType::Int64),
+                                          exec::MakeConst(int64_t{62})),
+                         std::move(in_traffic)),
         exec::MakeContains(exec::MakeColumnExpr("URL", core::DataType::String), "google"));
     auto plan = exec::MakeProject(
         exec::MakeFilter(exec::MakeScan(), std::move(condition)),
@@ -436,10 +436,9 @@ TEST(ProjectOperator, ConstantColumn) {
 TEST(GlobalAggregation, FilteredReductionsUseSelection) {
     auto width = exec::MakeColumnExpr("ResolutionWidth", core::DataType::Int64);
     auto filter = exec::MakeFilter(
-        exec::MakeScan(),
-        exec::MakeBinary(exec::BinaryFunction::Equal,
-                         exec::MakeColumnExpr("CounterID", core::DataType::Int64),
-                         exec::MakeConst(static_cast<int64_t>(62))));
+        exec::MakeScan(), exec::MakeBinary(exec::BinaryFunction::Equal,
+                                           exec::MakeColumnExpr("CounterID", core::DataType::Int64),
+                                           exec::MakeConst(static_cast<int64_t>(62))));
     auto plan = exec::MakeGlobalAggregation(
         std::move(filter), {exec::Sum(width, "sum_width"), exec::Count("c"),
                             exec::Min(width, "min_width"), exec::Max(width, "max_width")});
@@ -496,17 +495,16 @@ TEST(HashAggregation, GroupByDictionaryStringKey) {
     core::Schema schema({core::Field("URL", core::DataType::String)});
     core::Batch batch(schema);
     auto& col = batch.ColumnAt(0);
-    std::vector<std::string> values = {
-        "https://example.com/repeated/path",
-        "https://google.com/repeated/path",
-        "https://yandex.ru/repeated/path"};
+    std::vector<std::string> values = {"https://example.com/repeated/path",
+                                       "https://google.com/repeated/path",
+                                       "https://yandex.ru/repeated/path"};
     for (size_t i = 0; i < 300; ++i) {
         col.AppendFromString(values[i % values.size()]);
     }
 
-    auto plan = exec::MakeHashAggregation(
-        exec::MakeScan(), exec::MakeColumnExpr("URL", core::DataType::String),
-        "URL", {exec::Count("count")});
+    auto plan = exec::MakeHashAggregation(exec::MakeScan(),
+                                          exec::MakeColumnExpr("URL", core::DataType::String),
+                                          "URL", {exec::Count("count")});
     auto result = RunPlanOnBatch(batch, plan);
     ASSERT_EQ(result.RowsCount(), 3);
     for (size_t row = 0; row < result.RowsCount(); ++row) {
@@ -549,8 +547,8 @@ TEST(HashAggregation, EmitsGroupsInFirstSeenOrder) {
     core::Schema schema(
         {core::Field("key", core::DataType::Int64), core::Field("value", core::DataType::Int64)});
     core::Batch batch(schema);
-    for (auto [key, value] : std::vector<std::pair<int64_t, int64_t>>{
-             {3, 10}, {1, 20}, {2, 30}, {3, 40}}) {
+    for (auto [key, value] :
+         std::vector<std::pair<int64_t, int64_t>>{{3, 10}, {1, 20}, {2, 30}, {3, 40}}) {
         batch.ColumnAt(0).AppendFromString(std::to_string(key));
         batch.ColumnAt(1).AppendFromString(std::to_string(value));
     }
@@ -610,8 +608,8 @@ TEST(HashAggregation, CompositeKeyMergesDuplicateGroups) {
         exec::MakeScan(),
         {exec::ProjectionUnit{exec::MakeColumnExpr("user", core::DataType::Int64), "user"},
          exec::ProjectionUnit{exec::MakeColumnExpr("phrase", core::DataType::String), "phrase"}},
-        {exec::Count("count"), exec::Sum(exec::MakeColumnExpr("value", core::DataType::Int64),
-                                         "sum")});
+        {exec::Count("count"),
+         exec::Sum(exec::MakeColumnExpr("value", core::DataType::Int64), "sum")});
     auto result = RunPlanOnBatch(batch, plan);
     ASSERT_EQ(result.RowsCount(), 2);
     EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "1");
@@ -1139,8 +1137,7 @@ TEST(Kernel, TimestampAndLengthFunctions) {
 
 TEST(Kernel, DictionaryStringKernelsReuseDictionary) {
     auto dict = MakeDictionaryStringColumn(
-        {"https://www.google.com/path", "http://example.org/a", "plain"},
-        {0, 1, 0, 2});
+        {"https://www.google.com/path", "http://example.org/a", "plain"}, {0, 1, 0, 2});
 
     auto contains = exec::kernel::StrContains(*dict, "google", false);
     ASSERT_EQ(contains->Size(), 4);
@@ -1171,16 +1168,13 @@ TEST(ClickBenchQueries, Q18ExtractMinutePerUserAndPhrase) {
     }
 }
 
-TEST(ClickBenchQueries, Q23WatchIdEventTimeUrlTitle) {
+TEST(ClickBenchQueries, Q23SelectStarFilteredByUrlGoogle) {
     auto result = RunMiniQuery(23);
     ASSERT_EQ(result.RowsCount(), 2);
-    ASSERT_EQ(result.ColumnsCount(), 4);
-    EXPECT_EQ(result.GetSchema().GetFields()[0].name, "WatchID");
-    EXPECT_EQ(result.GetSchema().GetFields()[1].name, "EventTime");
-    EXPECT_EQ(result.GetSchema().GetFields()[2].name, "URL");
-    EXPECT_EQ(result.GetSchema().GetFields()[3].name, "Title");
-    EXPECT_EQ(result.ColumnAt(2).GetAsString(0), "google.com");
-    EXPECT_EQ(result.ColumnAt(2).GetAsString(1), "https://google.org/path");
+    ASSERT_EQ(result.ColumnsCount(), ClickBenchMiniSchema().FieldsCount());
+    size_t url_index = result.GetSchema().GetIndex("URL");
+    EXPECT_EQ(result.ColumnAt(url_index).GetAsString(0), "google.com");
+    EXPECT_EQ(result.ColumnAt(url_index).GetAsString(1), "https://google.org/path");
 }
 
 TEST(ClickBenchQueries, HavingAndDateQueriesRunOnMiniData) {

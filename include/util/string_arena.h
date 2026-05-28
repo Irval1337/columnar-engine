@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstring>
 #include <memory>
 #include <string_view>
 #include <vector>
@@ -15,7 +16,20 @@ public:
     StringArena(StringArena&& other) noexcept;
     StringArena& operator=(StringArena&& other) noexcept;
 
-    std::string_view Intern(std::string_view s);
+    std::string_view Intern(std::string_view s) {
+        if (s.empty()) {
+            return {};
+        }
+        if (s.size() > remaining_) {
+            AllocateChunk(s.size());
+        }
+        char* dest = next_;
+        std::memcpy(dest, s.data(), s.size());
+        next_ += s.size();
+        remaining_ -= s.size();
+        bytes_used_ += s.size();
+        return {dest, s.size()};
+    }
     void Reset() noexcept;
 
     size_t BytesUsed() const noexcept;

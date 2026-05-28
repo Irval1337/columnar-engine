@@ -1,23 +1,13 @@
 #include <exec/global_aggregate_operator.h>
 
-#include <exec/expression.h>
+#include <exec/expression/eval.h>
+#include <exec/expression/utils.h>
 #include <exec/kernel.h>
 
 #include <utility>
 #include <vector>
 
 namespace columnar::exec {
-namespace {
-bool RequiresDenseBatch(const std::vector<AggregationUnit>& aggregations) {
-    for (auto& unit : aggregations) {
-        if (unit.expression != nullptr && !IsTrivialExpression(*unit.expression)) {
-            return true;
-        }
-    }
-    return false;
-}
-}  // namespace
-
 GlobalAggregationSink::GlobalAggregationSink(IOperator& downstream,
                                              std::vector<AggregationUnit> aggregations)
     : downstream_(downstream),

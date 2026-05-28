@@ -2,7 +2,7 @@
 
 #include <core/column.h>
 #include <core/schema.h>
-#include <exec/expression.h>
+#include <exec/expression/types.h>
 
 #include <cstdint>
 #include <memory>

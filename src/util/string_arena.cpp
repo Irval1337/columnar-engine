@@ -1,7 +1,6 @@
 #include <util/string_arena.h>
 
 #include <algorithm>
-#include <cstring>
 #include <utility>
 
 namespace columnar::util {
@@ -14,21 +13,6 @@ StringArena& StringArena::operator=(StringArena&& other) noexcept {
         MoveFrom(std::move(other));
     }
     return *this;
-}
-
-std::string_view StringArena::Intern(std::string_view s) {
-    if (s.empty()) {
-        return {};
-    }
-    if (s.size() > remaining_) {
-        AllocateChunk(s.size());
-    }
-    char* dest = next_;
-    std::memcpy(dest, s.data(), s.size());
-    next_ += s.size();
-    remaining_ -= s.size();
-    bytes_used_ += s.size();
-    return {dest, s.size()};
 }
 
 void StringArena::Reset() noexcept {
@@ -55,7 +39,7 @@ void StringArena::AllocateChunk(size_t min_size) {
     if (!chunks_.empty()) {
         capacity = std::max(capacity, chunks_.back().capacity * 2);
     }
-    auto data = std::make_unique<char[]>(capacity);
+    std::unique_ptr<char[]> data(new char[capacity]);
     char* next = data.get();
     chunks_.push_back(Chunk{std::move(data), capacity});
     next_ = next;
