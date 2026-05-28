@@ -23,19 +23,33 @@ add_library(columnar_lib
   src/util/memory_mapped_file.cpp
   src/util/compression.cpp
   src/util/date_time.cpp
+  src/util/string_arena.cpp
   src/csv/csv_batch_reader.cpp
   src/csv/csv_batch_writer.cpp
   src/csv/csv_row_reader.cpp
   src/csv/schema_manager.cpp
   src/bruh/bruh_batch_reader.cpp
   src/bruh/bruh_batch_writer.cpp
+  src/exec/agg_state_buffer.cpp
   src/exec/aggregation.cpp
   src/exec/clickbench.cpp
+  src/exec/group_key_table.cpp
+  src/exec/group_key_table/composite.cpp
+  src/exec/group_key_table/int64.cpp
+  src/exec/group_key_table/int64_int64_string.cpp
+  src/exec/group_key_table/int64_pair.cpp
+  src/exec/group_key_table/int64_string.cpp
+  src/exec/group_key_table/string.cpp
   src/exec/expression.cpp
   src/exec/filter_operator.cpp
   src/exec/global_aggregate_operator.cpp
   src/exec/hash_aggregate_operator.cpp
-  src/exec/kernel.cpp
+  src/exec/kernel/core.cpp
+  src/exec/kernel/arithm.cpp
+  src/exec/kernel/compare.cpp
+  src/exec/kernel/reduce.cpp
+  src/exec/kernel/string.cpp
+  src/exec/kernel/temporal.cpp
   src/exec/metadata_pruning.cpp
   src/exec/operator.cpp
   src/exec/project_operator.cpp

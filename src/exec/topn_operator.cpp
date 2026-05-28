@@ -3,8 +3,10 @@
 #include <core/columns/string_column.h>
 #include <core/datatype.h>
 #include <core/schema.h>
-#include <exec/column_helpers.h>
-#include <exec/expression.h>
+#include <exec/column_row_access.h>
+#include <exec/selection.h>
+#include <exec/expression/eval.h>
+#include <exec/expression/utils.h>
 #include <exec/kernel.h>
 #include <util/macro.h>
 
@@ -18,15 +20,6 @@ struct RowRef {
     uint32_t batch_idx;
     uint32_t row_idx;
 };
-
-bool RequiresDenseBatch(const std::vector<SortUnit>& sort_units) {
-    for (auto& unit : sort_units) {
-        if (!IsTrivialExpression(*unit.expression)) {
-            return true;
-        }
-    }
-    return false;
-}
 
 template <typename T>
 int Compare3(const T& a, const T& b) {
@@ -92,8 +85,7 @@ void TopNSink::Finalize() {
     auto for_each_input_row = [&](auto&& emit) {
         for (size_t b = 0; b < buffer_.size(); ++b) {
             const auto& batch = buffer_[b];
-            const std::vector<uint32_t>* sel =
-                batch.HasSelection() ? &batch.Selection() : nullptr;
+            const std::vector<uint32_t>* sel = batch.HasSelection() ? &batch.Selection() : nullptr;
             ForSelectedRows(sel, batch.RowsCount(), [&](size_t row) {
                 emit(static_cast<uint32_t>(b), static_cast<uint32_t>(row));
             });

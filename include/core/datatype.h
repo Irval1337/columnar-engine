@@ -50,7 +50,7 @@ inline PhysicalType DataTypeToPhysical(DataType type) {
         case DataType::Char:
             return PhysicalType::Char;
     }
-    THROW_RUNTIME_ERROR("Unknown data type");
+    THROW_RUNTIME_ERROR("Unknown DataType value " + std::to_string(static_cast<int>(type)));
 }
 
 inline DataType StringToDataType(std::string_view s) {
@@ -81,7 +81,7 @@ inline DataType StringToDataType(std::string_view s) {
     if (s == "char") {
         return DataType::Char;
     }
-    THROW_RUNTIME_ERROR("Unsupported data type");
+    THROW_RUNTIME_ERROR("Unsupported data type name: '" + std::string(s) + "'");
 }
 
 inline std::string DataTypeToString(DataType type) {
@@ -105,6 +105,6 @@ inline std::string DataTypeToString(DataType type) {
         case DataType::Char:
             return "char";
     }
-    THROW_RUNTIME_ERROR("Unsupported data type");
+    THROW_RUNTIME_ERROR("Unsupported DataType value " + std::to_string(static_cast<int>(type)));
 }
 }  // namespace columnar::core

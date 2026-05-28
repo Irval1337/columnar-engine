@@ -23,6 +23,10 @@ public:
         return DataType::Char;
     }
 
+    ColumnKind GetKind() const override {
+        return ColumnKind::Char;
+    }
+
     size_t Size() const override {
         return data_.size();
     }

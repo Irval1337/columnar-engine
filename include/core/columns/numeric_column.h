@@ -26,6 +26,10 @@ public:
         return type;
     }
 
+    ColumnKind GetKind() const override {
+        return ColumnKind::Numeric;
+    }
+
     size_t Size() const override {
         return data_.size();
     }

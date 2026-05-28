@@ -2,7 +2,9 @@
 
 #include <core/columns/string_column.h>
 #include <core/field.h>
-#include <exec/column_helpers.h>
+#include <exec/column_dispatch.h>
+#include <exec/column_row_access.h>
+#include <exec/expression/eval.h>
 #include <exec/kernel.h>
 #include <util/macro.h>
 
@@ -11,7 +13,8 @@
 namespace columnar::exec {
 namespace {
 bool AggregationCanReturnNull(AggregationType type) {
-    return type == AggregationType::Avg || type == AggregationType::Min || type == AggregationType::Max;
+    return type == AggregationType::Avg || type == AggregationType::Min ||
+           type == AggregationType::Max;
 }
 
 core::DataType AggregationOutputType(const AggregationUnit& unit) {

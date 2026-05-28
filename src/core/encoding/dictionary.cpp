@@ -143,7 +143,8 @@ DecodedStringDictionary DecodeStringDictionary(util::BufReader& r, size_t n) {
 
     for (auto idx : indexes) {
         if (idx >= dict_count) {
-            THROW_RUNTIME_ERROR("Dictionary index out of range");
+            THROW_RUNTIME_ERROR("Dictionary index " + std::to_string(idx) + " out of range [0, " +
+                                std::to_string(dict_count) + ")");
         }
     }
 

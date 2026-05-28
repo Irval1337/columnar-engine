@@ -34,6 +34,7 @@ append_cmake_arg_if_set CMAKE_CXX_COMPILER_LAUNCHER
 append_cmake_arg_if_set CMAKE_C_FLAGS
 append_cmake_arg_if_set CMAKE_CXX_FLAGS
 append_cmake_arg_if_set FETCHCONTENT_BASE_DIR
+append_cmake_arg_if_set COLUMNAR_ENABLE_NATIVE
 
 reset_stale_build_state() {
   rm -rf \

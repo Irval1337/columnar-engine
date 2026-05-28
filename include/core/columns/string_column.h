@@ -16,8 +16,8 @@ public:
     StringColumn(bool nullable = false) : offsets_(1, 0), nullable_(nullable) {
     }
 
-    StringColumn(std::vector<char>&& data, std::vector<size_t>&& offsets,
-                 util::BitVector&& is_null, bool nullable)
+    StringColumn(std::vector<char>&& data, std::vector<size_t>&& offsets, util::BitVector&& is_null,
+                 bool nullable)
         : data_(std::move(data)),
           offsets_(std::move(offsets)),
           nullable_(nullable),
@@ -31,6 +31,10 @@ public:
 
     DataType GetDataType() const override {
         return DataType::String;
+    }
+
+    ColumnKind GetKind() const override {
+        return ColumnKind::String;
     }
 
     size_t Size() const override {
@@ -132,4 +136,15 @@ private:
     bool nullable_ = false;
     util::BitVector is_null_;
 };
+
+inline const StringColumn* AsString(const Column& col) noexcept {
+    if (col.GetKind() != ColumnKind::String) {
+        return nullptr;
+    }
+    return static_cast<const StringColumn*>(&col);
+}
+
+inline const StringColumn* AsString(const Column* col) noexcept {
+    return col != nullptr ? AsString(*col) : nullptr;
+}
 }  // namespace columnar::core

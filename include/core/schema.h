@@ -2,8 +2,11 @@
 
 #include <core/field.h>
 #include <util/macro.h>
+#include <util/string_hash.h>
 
 #include <cstddef>
+#include <functional>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -33,7 +36,7 @@ public:
     }
 
     const Field* FindField(std::string_view name) const {
-        auto it = index_.find(std::string(name));
+        auto it = index_.find(name);
         if (it == index_.end()) {
             return nullptr;
         }
@@ -45,7 +48,7 @@ public:
     }
 
     size_t GetIndex(std::string_view name) const {
-        auto it = index_.find(std::string(name));
+        auto it = index_.find(name);
         if (it == index_.end()) {
             THROW_RUNTIME_ERROR("Unknown field: " + std::string(name));
         }
@@ -54,6 +57,6 @@ public:
 
 private:
     std::vector<Field> fields_;
-    std::unordered_map<std::string, size_t> index_;
+    std::unordered_map<std::string, size_t, util::TransparentStringHash, std::equal_to<>> index_;
 };
 }  // namespace columnar::core

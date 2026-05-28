@@ -53,6 +53,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DFETCHCONTENT_BASE_DIR="${FETCHCONTENT_BASE_DIR}" \
             -DCOLUMNAR_BUILD_TESTS=ON \
+            -DCOLUMNAR_ENABLE_NATIVE=OFF \
             -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
 
@@ -105,6 +106,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DFETCHCONTENT_BASE_DIR="${FETCHCONTENT_BASE_DIR}" \
             -DCOLUMNAR_BUILD_TESTS=ON \
+            -DCOLUMNAR_ENABLE_NATIVE=OFF \
             -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" \
             -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer"
 
@@ -198,6 +200,7 @@ jobs:
           export CMAKE_C_COMPILER_LAUNCHER=ccache
           export CMAKE_CXX_COMPILER_LAUNCHER=ccache
           export FETCHCONTENT_BASE_DIR=/fetchcontent
+          export COLUMNAR_ENABLE_NATIVE=OFF
           EOF
 
           if [[ "${{ steps.cache-dataset.outputs.cache-hit }}" != "true" ]]; then

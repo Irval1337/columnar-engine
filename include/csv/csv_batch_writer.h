@@ -9,6 +9,12 @@
 #include <vector>
 
 namespace columnar::csv {
+struct CSVColumnView {
+    const core::Column* column;
+    core::DataType type;
+    bool nullable;
+};
+
 class CSVBatchWriter final : public core::BatchWriter {
 public:
     CSVBatchWriter(std::ostream& os, CSVOptions options) : os_(os), options_(options) {
@@ -21,13 +27,6 @@ public:
     }
 
 private:
-    // Helps to skip virtual calls and other checks during the cell loop
-    struct ColumnView {
-        const core::Column* column;
-        core::DataType type;
-        bool nullable;
-    };
-
     void WriteHeader(const core::Schema& schema);
     void AppendField(std::string_view value);
     void FlushLine();
@@ -36,6 +35,6 @@ private:
     CSVOptions options_;
     bool header_written_ = false;
     std::string line_buf_;
-    std::vector<ColumnView> col_views_;
+    std::vector<CSVColumnView> col_views_;
 };
 }  // namespace columnar::csv

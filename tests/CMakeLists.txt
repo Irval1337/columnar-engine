@@ -4,6 +4,7 @@ add_executable(columnar_tests
   test_bruh_compression.cpp
   test_bruh_encoding.cpp
   test_exec.cpp
+  test_util.cpp
 )
 
 target_link_libraries(columnar_tests

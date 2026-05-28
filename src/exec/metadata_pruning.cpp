@@ -1,35 +1,13 @@
 #include <exec/metadata_pruning.h>
 
+#include <bruh/bruh_batch_reader.h>
+#include <exec/expression/utils.h>
+
 #include <algorithm>
 #include <string_view>
 
 namespace columnar::exec {
 namespace {
-bool IsComparisonFunction(BinaryFunction f) {
-    return f == BinaryFunction::Equal || f == BinaryFunction::NotEqual ||
-           f == BinaryFunction::Less || f == BinaryFunction::LessOrEqual ||
-           f == BinaryFunction::Greater || f == BinaryFunction::GreaterOrEqual;
-}
-
-bool IsConstExpression(const Expression& expr) {
-    return expr.type == ExpressionType::ConstInt64 || expr.type == ExpressionType::ConstString;
-}
-
-BinaryFunction FlipComparison(BinaryFunction f) {
-    switch (f) {
-        case BinaryFunction::Less:
-            return BinaryFunction::Greater;
-        case BinaryFunction::LessOrEqual:
-            return BinaryFunction::GreaterOrEqual;
-        case BinaryFunction::Greater:
-            return BinaryFunction::Less;
-        case BinaryFunction::GreaterOrEqual:
-            return BinaryFunction::LessOrEqual;
-        default:
-            return f;
-    }
-}
-
 template <typename T>
 bool MinMaxMayMatch(T mn, T mx, T value, BinaryFunction function) {
     switch (function) {

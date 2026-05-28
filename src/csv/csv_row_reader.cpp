@@ -19,7 +19,7 @@ bool ToggleInQuotes(std::string_view line, bool in_quotes, char quote) {
     return in_quotes;
 }
 
-void ParseUnquotedRow(std::string_view raw_row, char delim, CSVRowReader::RowView& out) {
+void ParseUnquotedRow(std::string_view raw_row, char delim, RowView& out) {
     size_t pos = 0;
     while (true) {
         auto next = raw_row.find(delim, pos);
@@ -80,7 +80,7 @@ std::string_view ParseUnquotedField(std::string_view raw_row, size_t& pos, char 
 }
 
 void ParseQuotedRow(std::string_view raw_row, const CSVOptions& options, std::string& scratch,
-                    CSVRowReader::RowView& out) {
+                    RowView& out) {
     scratch.reserve(raw_row.size());
     size_t pos = 0;
     while (pos < raw_row.size()) {
@@ -124,7 +124,7 @@ bool CSVRowReader::ReadRawRow() {
     return true;
 }
 
-const CSVRowReader::RowView* CSVRowReader::ReadRowView() {
+const RowView* CSVRowReader::ReadRowView() {
     if (!ReadRawRow()) {
         return nullptr;
     }
@@ -141,7 +141,7 @@ const CSVRowReader::RowView* CSVRowReader::ReadRowView() {
     return &parsed_fields_;
 }
 
-std::optional<CSVRowReader::Row> CSVRowReader::ReadRow() {
+std::optional<Row> CSVRowReader::ReadRow() {
     auto* view = ReadRowView();
     if (!view) {
         return std::nullopt;

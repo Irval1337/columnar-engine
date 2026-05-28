@@ -10,33 +10,33 @@
 #include <vector>
 
 namespace columnar::csv {
+// was_quoted helps to identify empty unquoted fields and empty strings like ""
+template <typename T>
+struct BasicField {
+    T value;
+    bool was_quoted = false;
+
+    operator const T&() const {
+        return value;
+    }
+    operator std::string_view() const {
+        return value;
+    }
+    bool empty() const {  // NOLINT(readability-identifier-naming)
+        return value.empty();
+    }
+    bool operator==(std::string_view other) const {
+        return std::string_view(value) == other;
+    }
+};
+
+using FieldView = BasicField<std::string_view>;
+using Field = BasicField<std::string>;
+using Row = std::vector<Field>;
+using RowView = std::vector<FieldView>;
+
 class CSVRowReader {
 public:
-    // was_quoted helps to identify empty unquoted fields and empty strings like ""
-    template <typename T>
-    struct BasicField {
-        T value;
-        bool was_quoted = false;
-
-        operator const T&() const {
-            return value;
-        }
-        operator std::string_view() const {
-            return value;
-        }
-        bool empty() const {  // NOLINT
-            return value.empty();
-        }
-        bool operator==(std::string_view other) const {
-            return std::string_view(value) == other;
-        }
-    };
-
-    using FieldView = BasicField<std::string_view>;
-    using Field = BasicField<std::string>;
-    using Row = std::vector<Field>;
-    using RowView = std::vector<FieldView>;
-
     CSVRowReader(std::istream& is, CSVOptions options = {}) : is_(is), options_(options) {
         if (options_.has_header) {
             ReadRowView();

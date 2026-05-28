@@ -1,11 +1,13 @@
 #include <exec/operator.h>
 
 #include <core/columns/numeric_column.h>
+#include <exec/expression/eval.h>
 #include <exec/filter_operator.h>
 #include <exec/global_aggregate_operator.h>
 #include <exec/hash_aggregate_operator.h>
 #include <exec/kernel.h>
 #include <exec/metadata_pruning.h>
+#include <exec/operator_visit.h>
 #include <exec/project_operator.h>
 #include <exec/topn_operator.h>
 #include <util/macro.h>
@@ -19,74 +21,6 @@ void CollectSink::Consume(core::Batch batch) {
 }
 
 namespace {
-template <typename T>
-const T& As(const std::shared_ptr<Operator>& op) {
-    return static_cast<const T&>(*op);
-}
-
-void PlanRec(const std::shared_ptr<Operator>& op, const core::Schema& table_schema,
-             std::vector<std::string> required_columns) {
-    switch (op->type) {
-        case OperatorType::Scan: {
-            auto& scan = static_cast<ScanOperator&>(*op);
-            std::vector<core::Field> fields;
-            fields.reserve(required_columns.size());
-            for (auto& name : required_columns) {
-                auto* field = table_schema.FindField(name);
-                if (field == nullptr) {
-                    THROW_RUNTIME_ERROR("Unknown field: " + name);
-                }
-                fields.push_back(*field);
-            }
-            scan.schema = core::Schema(std::move(fields));
-            return;
-        }
-        case OperatorType::CountTable:
-            return;
-        case OperatorType::Filter: {
-            auto& filter = As<FilterOperator>(op);
-            CollectColumns(*filter.condition, required_columns);
-            PlanRec(filter.child, table_schema, std::move(required_columns));
-            return;
-        }
-        case OperatorType::Aggregation: {
-            auto& aggregate = As<AggregationOperator>(op);
-            std::vector<std::string> child_required;
-            for (auto& key : aggregate.keys) {
-                CollectColumns(*key.expression, child_required);
-            }
-            for (auto& unit : aggregate.aggregations) {
-                if (unit.expression != nullptr) {
-                    CollectColumns(*unit.expression, child_required);
-                }
-            }
-            PlanRec(aggregate.child, table_schema, std::move(child_required));
-            return;
-        }
-        case OperatorType::Project: {
-            auto& project = As<ProjectOperator>(op);
-            std::vector<std::string> child_required;
-            for (auto& unit : project.projections) {
-                CollectColumns(*unit.expression, child_required);
-            }
-            if (child_required.empty() && table_schema.FieldsCount() > 0) {
-                child_required.push_back(table_schema.GetFields()[0].name);
-            }
-            PlanRec(project.child, table_schema, std::move(child_required));
-            return;
-        }
-        case OperatorType::TopN: {
-            auto& topn = As<TopNOperator>(op);
-            for (auto& unit : topn.sort_units) {
-                CollectColumns(*unit.expression, required_columns);
-            }
-            PlanRec(topn.child, table_schema, std::move(required_columns));
-            return;
-        }
-    }
-    THROW_RUNTIME_ERROR("Unsupported operator type");
-}
-
 std::vector<std::string> ScanColumnNames(const ScanOperator& scan) {
     std::vector<std::string> columns;
     columns.reserve(scan.schema.FieldsCount());
@@ -125,56 +59,133 @@ void ExecuteFilterScanInto(bruh::BruhBatchReader& reader, const ScanOperator& sc
     sink.Finalize();
 }
 
+void PlanRec(const std::shared_ptr<Operator>& op, const core::Schema& table_schema,
+             std::vector<std::string> required_columns);
+
+struct PlanVisitor {
+    const core::Schema& table_schema;
+    std::vector<std::string>& required_columns;
+
+    void Visit(ScanOperator& scan) const {
+        std::vector<core::Field> fields;
+        fields.reserve(required_columns.size());
+        for (auto& name : required_columns) {
+            auto* field = table_schema.FindField(name);
+            if (field == nullptr) {
+                THROW_RUNTIME_ERROR("Unknown field: " + name);
+            }
+            fields.push_back(*field);
+        }
+        scan.schema = core::Schema(std::move(fields));
+    }
+
+    void Visit(CountTableOperator&) const {
+    }
+
+    void Visit(FilterOperator& filter) const {
+        CollectColumns(*filter.condition, required_columns);
+        PlanRec(filter.child, table_schema, std::move(required_columns));
+    }
+
+    void Visit(GlobalAggregationOperator& aggregate) const {
+        std::vector<std::string> child_required;
+        for (auto& unit : aggregate.aggregations) {
+            if (unit.expression != nullptr) {
+                CollectColumns(*unit.expression, child_required);
+            }
+        }
+        PlanRec(aggregate.child, table_schema, std::move(child_required));
+    }
+
+    void Visit(HashAggregationOperator& aggregate) const {
+        std::vector<std::string> child_required;
+        for (auto& key : aggregate.keys) {
+            CollectColumns(*key.expression, child_required);
+        }
+        for (auto& unit : aggregate.aggregations) {
+            if (unit.expression != nullptr) {
+                CollectColumns(*unit.expression, child_required);
+            }
+        }
+        PlanRec(aggregate.child, table_schema, std::move(child_required));
+    }
+
+    void Visit(ProjectOperator& project) const {
+        std::vector<std::string> child_required;
+        for (auto& unit : project.projections) {
+            CollectColumns(*unit.expression, child_required);
+        }
+        if (child_required.empty() && table_schema.FieldsCount() > 0) {
+            child_required.push_back(table_schema.GetFields()[0].name);
+        }
+        PlanRec(project.child, table_schema, std::move(child_required));
+    }
+
+    void Visit(TopNOperator& topn) const {
+        for (auto& unit : topn.sort_units) {
+            CollectColumns(*unit.expression, required_columns);
+        }
+        PlanRec(topn.child, table_schema, std::move(required_columns));
+    }
+};
+
+void PlanRec(const std::shared_ptr<Operator>& op, const core::Schema& table_schema,
+             std::vector<std::string> required_columns) {
+    PlanVisitor visitor{table_schema, required_columns};
+    VisitOperator(*op, visitor);
+}
+
+void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>& op,
+                 IOperator& downstream);
+
+struct ExecuteVisitor {
+    bruh::BruhBatchReader& reader;
+    IOperator& downstream;
+
+    void Visit(const ScanOperator& scan) const {
+        ExecuteScanInto(reader, scan, downstream);
+    }
+
+    void Visit(const CountTableOperator& count) const {
+        downstream.Consume(MakeCountBatch(count, reader.GetMetaData().rows_count));
+        downstream.Finalize();
+    }
+
+    void Visit(const GlobalAggregationOperator& aggregate) const {
+        GlobalAggregationSink sink(downstream, aggregate.aggregations);
+        ExecuteInto(reader, aggregate.child, sink);
+    }
+
+    void Visit(const HashAggregationOperator& aggregate) const {
+        HashAggregationSink sink(downstream, aggregate.keys, aggregate.aggregations);
+        ExecuteInto(reader, aggregate.child, sink);
+    }
+
+    void Visit(const FilterOperator& filter) const {
+        if (filter.child->type == OperatorType::Scan) {
+            ExecuteFilterScanInto(reader, static_cast<const ScanOperator&>(*filter.child),
+                                  filter.condition, downstream);
+            return;
+        }
+        FilterSink sink(downstream, filter.condition);
+        ExecuteInto(reader, filter.child, sink);
+    }
+
+    void Visit(const ProjectOperator& project) const {
+        ProjectSink sink(downstream, project.projections);
+        ExecuteInto(reader, project.child, sink);
+    }
+
+    void Visit(const TopNOperator& topn) const {
+        TopNSink sink(downstream, topn.sort_units, topn.limit, topn.offset);
+        ExecuteInto(reader, topn.child, sink);
+    }
+};
+
 void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>& op,
                  IOperator& downstream) {
-    switch (op->type) {
-        case OperatorType::Scan: {
-            auto& scan = As<ScanOperator>(op);
-            ExecuteScanInto(reader, scan, downstream);
-            return;
-        }
-        case OperatorType::CountTable: {
-            downstream.Consume(
-                MakeCountBatch(As<CountTableOperator>(op), reader.GetMetaData().rows_count));
-            downstream.Finalize();
-            return;
-        }
-        case OperatorType::Aggregation: {
-            auto& aggregate = As<AggregationOperator>(op);
-            if (aggregate.keys.empty()) {
-                GlobalAggregationSink sink(downstream, aggregate.aggregations);
-                ExecuteInto(reader, aggregate.child, sink);
-            } else {
-                HashAggregationSink sink(downstream, aggregate.keys, aggregate.aggregations);
-                ExecuteInto(reader, aggregate.child, sink);
-            }
-            return;
-        }
-        case OperatorType::Filter: {
-            auto& filter = As<FilterOperator>(op);
-            if (filter.child->type == OperatorType::Scan) {
-                ExecuteFilterScanInto(reader, As<ScanOperator>(filter.child), filter.condition,
-                                      downstream);
-                return;
-            }
-            FilterSink sink(downstream, filter.condition);
-            ExecuteInto(reader, filter.child, sink);
-            return;
-        }
-        case OperatorType::Project: {
-            auto& project = As<ProjectOperator>(op);
-            ProjectSink sink(downstream, project.projections);
-            ExecuteInto(reader, project.child, sink);
-            return;
-        }
-        case OperatorType::TopN: {
-            auto& topn = As<TopNOperator>(op);
-            TopNSink sink(downstream, topn.sort_units, topn.limit, topn.offset);
-            ExecuteInto(reader, topn.child, sink);
-            return;
-        }
-    }
-    THROW_RUNTIME_ERROR("Unsupported operator type");
+    ExecuteVisitor visitor{reader, downstream};
+    VisitOperator(*op, visitor);
 }
 }  // namespace
 

@@ -82,9 +82,12 @@ public:
         if (columns_.empty()) {
             return;
         }
-        for (auto& c : columns_) {
-            if (c->Size() != columns_[0]->Size()) {
-                THROW_RUNTIME_ERROR("Different columns sizes");
+        size_t reference = columns_[0]->Size();
+        for (size_t i = 0; i < columns_.size(); ++i) {
+            if (columns_[i]->Size() != reference) {
+                THROW_RUNTIME_ERROR("Column " + std::to_string(i) + " has size " +
+                                    std::to_string(columns_[i]->Size()) + ", expected " +
+                                    std::to_string(reference));
             }
         }
     }
