@@ -377,6 +377,23 @@ TEST(FilterOperator, FusedAndInAndContains) {
     EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "google.com");
 }
 
+TEST(FilterOperator, MixedIntAndStringTerms) {
+    auto condition =
+        exec::MakeBinary(exec::BinaryFunction::And,
+                         exec::MakeBinary(exec::BinaryFunction::Equal,
+                                          exec::MakeColumnExpr("CounterID", core::DataType::Int64),
+                                          exec::MakeConst(int64_t{62})),
+                         exec::MakeBinary(exec::BinaryFunction::NotEqual,
+                                          exec::MakeColumnExpr("Title", core::DataType::String),
+                                          exec::MakeConst(std::string("Example"))));
+    auto plan = exec::MakeProject(
+        exec::MakeFilter(exec::MakeScan(), std::move(condition)),
+        {exec::ProjectionUnit{exec::MakeColumnExpr("URL", core::DataType::String), "URL"}});
+    auto result = RunPlan(plan);
+    ASSERT_EQ(result.RowsCount(), 1);
+    EXPECT_EQ(result.ColumnAt(0).GetAsString(0), "google.com");
+}
+
 TEST(ClickBenchQueries, SumCountAvg) {
     auto result = RunMiniQuery(2);
     EXPECT_EQ(result.ColumnsCount(), 3);
