@@ -3,7 +3,6 @@
 #include <exec/column_row_access.h>
 #include <exec/group_key_table.h>
 #include <exec/group_key_table/factories.h>
-#include <exec/selection.h>
 
 #include <absl/container/flat_hash_map.h>
 
@@ -13,6 +12,8 @@
 
 namespace columnar::exec {
 namespace {
+constexpr size_t kPrefetchDistance = 16;
+
 class Int64KeyTable final : public GroupKeyTable {
 public:
     void Consume(const std::vector<const core::Column*>& key_cols,
@@ -21,9 +22,16 @@ public:
                  AggStateBuffer& state) override {
         VisitIntegerCol(*key_cols[0], [&](const auto& typed) {
             const util::BitVector* mask = typed.IsNullable() ? &typed.GetNullMask() : nullptr;
-            ForSelectedRows(selection, rows, [&](size_t row) {
+            size_t count = selection != nullptr ? selection->size() : rows;
+            for (size_t i = 0; i < count; ++i) {
+                if (i + kPrefetchDistance < count) {
+                    size_t ahead = selection != nullptr ? (*selection)[i + kPrefetchDistance]
+                                                        : i + kPrefetchDistance;
+                    table_.prefetch(static_cast<int64_t>(ReadTypedValue(typed, ahead)));
+                }
+                size_t row = selection != nullptr ? (*selection)[i] : i;
                 if (mask != nullptr && mask->Get(row)) {
-                    return;
+                    continue;
                 }
                 int64_t key = static_cast<int64_t>(ReadTypedValue(typed, row));
                 auto it = table_.find(key);
@@ -36,7 +44,7 @@ public:
                     group_id = it->second;
                 }
                 state.OnRow(group_id, agg_cols, row);
-            });
+            }
         });
     }
 

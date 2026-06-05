@@ -20,6 +20,8 @@
 
 namespace columnar::exec {
 namespace {
+constexpr size_t kPrefetchDistance = 16;
+
 class Int64Int64StringKeyTable final : public GroupKeyTable {
 public:
     explicit Int64Int64StringKeyTable(util::StringArena& arena)
@@ -48,11 +50,34 @@ public:
                     }
                 }
 
-                ForSelectedRows(selection, rows, [&](size_t row) {
+                size_t count = selection != nullptr ? selection->size() : rows;
+                for (size_t i = 0; i < count; ++i) {
+                    if (i + kPrefetchDistance < count) {
+                        size_t ahead = selection != nullptr ? (*selection)[i + kPrefetchDistance]
+                                                            : i + kPrefetchDistance;
+                        int64_t first = static_cast<int64_t>(ReadTypedValue(first_typed, ahead));
+                        int64_t second =
+                            static_cast<int64_t>(ReadTypedValue(second_typed, ahead));
+                        std::string_view third;
+                        size_t third_hash;
+                        if (dict != nullptr) {
+                            uint32_t id = dict->GetId(ahead);
+                            third = dict->DictValue(id);
+                            third_hash = dict_hashes[id];
+                        } else {
+                            third = strings->Get(ahead);
+                            third_hash = std::hash<std::string_view>{}(third);
+                        }
+
+                        ProbeKey probe{first, second, third,
+                                       group_key::HashIntIntString(first, second, third_hash)};
+                        groups_.prefetch(probe);
+                    }
+                    size_t row = selection != nullptr ? (*selection)[i] : i;
                     if ((first_mask != nullptr && first_mask->Get(row)) ||
                         (second_mask != nullptr && second_mask->Get(row)) ||
                         key_cols[2]->IsNull(row)) {
-                        return;
+                        continue;
                     }
                     int64_t first = static_cast<int64_t>(ReadTypedValue(first_typed, row));
                     int64_t second = static_cast<int64_t>(ReadTypedValue(second_typed, row));
@@ -75,7 +100,7 @@ public:
                         InsertGroup(group_id, probe);
                     }
                     state.OnRow(group_id, agg_cols, row);
-                });
+                }
             });
         });
     }

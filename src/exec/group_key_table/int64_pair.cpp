@@ -15,6 +15,8 @@
 
 namespace columnar::exec {
 namespace {
+constexpr size_t kPrefetchDistance = 16;
+
 class Int64PairKeyTable final : public GroupKeyTable {
 public:
     void Consume(const std::vector<const core::Column*>& key_cols,
@@ -27,10 +29,19 @@ public:
                     first_typed.IsNullable() ? &first_typed.GetNullMask() : nullptr;
                 const util::BitVector* second_mask =
                     second_typed.IsNullable() ? &second_typed.GetNullMask() : nullptr;
-                ForSelectedRows(selection, rows, [&](size_t row) {
+                size_t count = selection != nullptr ? selection->size() : rows;
+                for (size_t i = 0; i < count; ++i) {
+                    if (i + kPrefetchDistance < count) {
+                        size_t ahead = selection != nullptr ? (*selection)[i + kPrefetchDistance]
+                                                            : i + kPrefetchDistance;
+                        Key key{static_cast<int64_t>(ReadTypedValue(first_typed, ahead)),
+                                static_cast<int64_t>(ReadTypedValue(second_typed, ahead))};
+                        table_.prefetch(key);
+                    }
+                    size_t row = selection != nullptr ? (*selection)[i] : i;
                     if ((first_mask != nullptr && first_mask->Get(row)) ||
                         (second_mask != nullptr && second_mask->Get(row))) {
-                        return;
+                        continue;
                     }
                     Key key{static_cast<int64_t>(ReadTypedValue(first_typed, row)),
                             static_cast<int64_t>(ReadTypedValue(second_typed, row))};
@@ -44,7 +55,7 @@ public:
                         group_id = it->second;
                     }
                     state.OnRow(group_id, agg_cols, row);
-                });
+                }
             });
         });
     }

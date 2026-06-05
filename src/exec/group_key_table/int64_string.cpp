@@ -20,6 +20,8 @@
 
 namespace columnar::exec {
 namespace {
+constexpr size_t kPrefetchDistance = 16;
+
 class Int64StringKeyTable final : public GroupKeyTable {
 public:
     explicit Int64StringKeyTable(util::StringArena& arena)
@@ -44,9 +46,28 @@ public:
                 }
             }
 
-            ForSelectedRows(selection, rows, [&](size_t row) {
+            size_t count = selection != nullptr ? selection->size() : rows;
+            for (size_t i = 0; i < count; ++i) {
+                if (i + kPrefetchDistance < count) {
+                    size_t ahead = selection != nullptr ? (*selection)[i + kPrefetchDistance]
+                                                        : i + kPrefetchDistance;
+                    int64_t first = static_cast<int64_t>(ReadTypedValue(first_typed, ahead));
+                    std::string_view second;
+                    size_t second_hash;
+                    if (dict != nullptr) {
+                        uint32_t id = dict->GetId(ahead);
+                        second = dict->DictValue(id);
+                        second_hash = dict_hashes[id];
+                    } else {
+                        second = strings->Get(ahead);
+                        second_hash = std::hash<std::string_view>{}(second);
+                    }
+                    ProbeKey probe{first, second, group_key::HashIntString(first, second_hash)};
+                    groups_.prefetch(probe);
+                }
+                size_t row = selection != nullptr ? (*selection)[i] : i;
                 if ((first_mask != nullptr && first_mask->Get(row)) || key_cols[1]->IsNull(row)) {
-                    return;
+                    continue;
                 }
                 int64_t first = static_cast<int64_t>(ReadTypedValue(first_typed, row));
                 std::string_view second;
@@ -67,7 +88,7 @@ public:
                     InsertGroup(group_id, probe);
                 }
                 state.OnRow(group_id, agg_cols, row);
-            });
+            }
         });
     }
 
