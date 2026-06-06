@@ -18,6 +18,8 @@
 
 namespace columnar::exec {
 namespace {
+constexpr size_t kPrefetchDistance = 16;
+
 class StringKeyTable final : public GroupKeyTable {
 public:
     explicit StringKeyTable(util::StringArena& arena) : arena_(arena) {
@@ -32,9 +34,16 @@ public:
             return;
         }
         auto& s = static_cast<const core::StringColumn&>(*key_cols[0]);
-        ForSelectedRows(selection, rows, [&](size_t row) {
+        size_t count = selection != nullptr ? selection->size() : rows;
+        for (size_t i = 0; i < count; ++i) {
+            if (i + kPrefetchDistance < count) {
+                size_t ahead = selection != nullptr ? (*selection)[i + kPrefetchDistance]
+                                                    : i + kPrefetchDistance;
+                table_.prefetch(s.Get(ahead));
+            }
+            size_t row = selection != nullptr ? (*selection)[i] : i;
             if (s.IsNull(row)) {
-                return;
+                continue;
             }
             auto key = s.Get(row);
             uint32_t group_id;
@@ -48,7 +57,7 @@ public:
                 group_id = it->second;
             }
             state.OnRow(group_id, agg_cols, row);
-        });
+        }
     }
 
     void AppendKeys(uint32_t group_id, core::Batch& out) const override {
@@ -95,12 +104,19 @@ private:
             return group_id;
         };
 
-        ForSelectedRows(selection, rows, [&](size_t row) {
+        size_t count = selection != nullptr ? selection->size() : rows;
+        for (size_t i = 0; i < count; ++i) {
+            if (i + kPrefetchDistance < count) {
+                size_t ahead = selection != nullptr ? (*selection)[i + kPrefetchDistance]
+                                                    : i + kPrefetchDistance;
+                table_.prefetch(key_col.DictValue(key_col.GetId(ahead)));
+            }
+            size_t row = selection != nullptr ? (*selection)[i] : i;
             if (key_col.IsNull(row)) {
-                return;
+                continue;
             }
             state.OnRow(resolve_group(key_col.GetId(row)), agg_cols, row);
-        });
+        }
     }
 
     util::StringArena& arena_;

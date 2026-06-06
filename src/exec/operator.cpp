@@ -6,11 +6,15 @@
 #include <exec/global_aggregate_operator.h>
 #include <exec/hash_aggregate_operator.h>
 #include <exec/kernel.h>
+#include <exec/late_topn.h>
 #include <exec/metadata_pruning.h>
 #include <exec/operator_visit.h>
 #include <exec/project_operator.h>
 #include <exec/topn_operator.h>
 #include <util/macro.h>
+
+#include <string>
+#include <vector>
 
 namespace columnar::exec {
 void CollectSink::Consume(core::Batch batch) {
@@ -46,9 +50,79 @@ void ExecuteScanInto(bruh::BruhBatchReader& reader, const ScanOperator& scan,
     downstream.Finalize();
 }
 
+core::Batch ConcatColumns(core::Batch&& left, core::Batch&& right) {
+    std::vector<core::Field> fields = left.GetSchema().GetFields();
+    for (auto& field : right.GetSchema().GetFields()) {
+        fields.push_back(field);
+    }
+    core::Batch out(core::Schema(std::move(fields)));
+    auto& columns = out.GetColumns();
+    columns.clear();
+    for (auto& column : left.GetColumns()) {
+        columns.push_back(std::move(column));
+    }
+    for (auto& column : right.GetColumns()) {
+        columns.push_back(std::move(column));
+    }
+    return out;
+}
+
+std::vector<std::string> PayloadColumns(const std::vector<std::string>& scan_names,
+                                        const std::vector<std::string>& filter_names) {
+    std::vector<std::string> payload;
+    for (auto& name : scan_names) {
+        bool is_filter = false;
+        for (auto& filter_name : filter_names) {
+            if (filter_name == name) {
+                is_filter = true;
+                break;
+            }
+        }
+        if (!is_filter) {
+            payload.push_back(name);
+        }
+    }
+    return payload;
+}
+
+void ExecuteFilterScanLate(bruh::BruhBatchReader& reader,
+                           const std::shared_ptr<Expression>& condition,
+                           const std::vector<std::string>& filter_names,
+                           const std::vector<std::string>& payload_names, IOperator& downstream) {
+    auto filter_indexes = reader.ResolveColumnNames(filter_names);
+    auto payload_indexes = reader.ResolveColumnNames(payload_names);
+    for (size_t group = 0; group < reader.NumRowGroups(); ++group) {
+        if (!PredicateMayMatch(reader, group, *condition)) {
+            continue;
+        }
+        auto filter_batch = reader.ReadRowGroup(group, filter_indexes);
+        auto selection = EvaluatePredicateSelection(filter_batch, *condition);
+        if (selection.empty()) {
+            continue;
+        }
+        size_t group_rows = filter_batch.RowsCount();
+        core::Batch combined =
+            ConcatColumns(std::move(filter_batch), reader.ReadRowGroup(group, payload_indexes));
+        if (selection.size() != group_rows) {
+            combined.SetSelection(std::move(selection));
+        }
+        downstream.Consume(std::move(combined));
+    }
+    downstream.Finalize();
+}
+
 void ExecuteFilterScanInto(bruh::BruhBatchReader& reader, const ScanOperator& scan,
                            const std::shared_ptr<Expression>& condition, IOperator& downstream) {
-    auto column_indexes = reader.ResolveColumnNames(ScanColumnNames(scan));
+    auto scan_names = ScanColumnNames(scan);
+    std::vector<std::string> filter_names;
+    CollectColumns(*condition, filter_names);
+    auto payload_names = PayloadColumns(scan_names, filter_names);
+    if (!payload_names.empty() && !filter_names.empty()) {
+        ExecuteFilterScanLate(reader, condition, filter_names, payload_names, downstream);
+        return;
+    }
+
+    auto column_indexes = reader.ResolveColumnNames(scan_names);
     FilterSink sink(downstream, condition);
     for (size_t group = 0; group < reader.NumRowGroups(); ++group) {
         if (!PredicateMayMatch(reader, group, *condition)) {
@@ -135,6 +209,15 @@ void PlanRec(const std::shared_ptr<Operator>& op, const core::Schema& table_sche
     VisitOperator(*op, visitor);
 }
 
+bool AllSortsAreColumns(const std::vector<SortUnit>& sort_units) {
+    for (auto& unit : sort_units) {
+        if (unit.expression->type != ExpressionType::Column) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>& op,
                  IOperator& downstream);
 
@@ -172,11 +255,22 @@ struct ExecuteVisitor {
     }
 
     void Visit(const ProjectOperator& project) const {
+        if (TryExecuteLateTopN(reader, project, downstream)) {
+            return;
+        }
         ProjectSink sink(downstream, project.projections);
         ExecuteInto(reader, project.child, sink);
     }
 
     void Visit(const TopNOperator& topn) const {
+        if (topn.limit && topn.child->type == OperatorType::HashAggregation &&
+            AllSortsAreColumns(topn.sort_units)) {
+            auto& aggregate = static_cast<const HashAggregationOperator&>(*topn.child);
+            HashAggregationSink sink(downstream, aggregate.keys, aggregate.aggregations,
+                                     HashAggregateTopN{topn.sort_units, *topn.limit, topn.offset});
+            ExecuteInto(reader, aggregate.child, sink);
+            return;
+        }
         TopNSink sink(downstream, topn.sort_units, topn.limit, topn.offset);
         ExecuteInto(reader, topn.child, sink);
     }

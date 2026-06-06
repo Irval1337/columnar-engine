@@ -10,7 +10,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <absl/container/flat_hash_set.h>
 #include <vector>
 
 namespace columnar::exec::kernel {
@@ -99,8 +99,8 @@ AvgPartial Avg(const core::Column& col, const std::vector<uint32_t>* selection =
 
 uint64_t CountNonNull(const core::Column& col, const std::vector<uint32_t>* selection = nullptr);
 
-void DistinctInts(const core::Column& col, std::unordered_set<int64_t>& out,
+void DistinctInts(const core::Column& col, absl::flat_hash_set<int64_t>& out,
                   const std::vector<uint32_t>* selection = nullptr);
-void DistinctStrings(const core::Column& col, std::unordered_set<std::string>& out,
+void DistinctStrings(const core::Column& col, absl::flat_hash_set<std::string>& out,
                      const std::vector<uint32_t>* selection = nullptr);
 }  // namespace columnar::exec::kernel

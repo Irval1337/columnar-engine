@@ -4,10 +4,11 @@
 #include <core/schema.h>
 #include <exec/expression/types.h>
 
+#include <absl/container/flat_hash_set.h>
+
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -75,8 +76,8 @@ struct MinMaxState {
 };
 
 struct DistinctState {
-    std::unordered_set<int64_t> ints;
-    std::unordered_set<std::string> strings;
+    absl::flat_hash_set<int64_t> ints;
+    absl::flat_hash_set<std::string> strings;
 };
 
 using AggregationState = std::variant<CountState, SumState, AvgState, MinMaxState, DistinctState>;

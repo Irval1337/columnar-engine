@@ -21,6 +21,8 @@
 
 namespace columnar::exec {
 namespace {
+constexpr size_t kPrefetchDistance = 16;
+
 class CompositeKeyTable final : public GroupKeyTable {
 public:
     CompositeKeyTable(const std::vector<ProjectionUnit>& keys, util::StringArena& arena)
@@ -40,9 +42,17 @@ public:
                  const std::vector<uint32_t>* selection, size_t rows,
                  AggStateBuffer& state) override {
         BatchView batch_view(*this, key_cols);
-        ForSelectedRows(selection, rows, [&](size_t row) {
+        size_t count = selection != nullptr ? selection->size() : rows;
+        for (size_t i = 0; i < count; ++i) {
+            if (i + kPrefetchDistance < count) {
+                size_t ahead = selection != nullptr ? (*selection)[i + kPrefetchDistance]
+                                                    : i + kPrefetchDistance;
+                ProbeKey probe{&batch_view, ahead, batch_view.HashRow(ahead)};
+                groups_.prefetch(probe);
+            }
+            size_t row = selection != nullptr ? (*selection)[i] : i;
             if (batch_view.HasNull(row)) {
-                return;
+                continue;
             }
             ProbeKey probe{&batch_view, row, batch_view.HashRow(row)};
             uint32_t group_id;
@@ -51,7 +61,7 @@ public:
                 InsertGroup(group_id, probe);
             }
             state.OnRow(group_id, agg_cols, row);
-        });
+        }
     }
 
     void AppendKeys(uint32_t group_id, core::Batch& out) const override {

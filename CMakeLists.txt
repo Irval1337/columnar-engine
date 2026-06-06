@@ -44,6 +44,7 @@ add_library(columnar_lib
   src/exec/filter_operator.cpp
   src/exec/global_aggregate_operator.cpp
   src/exec/hash_aggregate_operator.cpp
+  src/exec/late_topn.cpp
   src/exec/kernel/core.cpp
   src/exec/kernel/arithm.cpp
   src/exec/kernel/compare.cpp
