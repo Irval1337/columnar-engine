@@ -8,6 +8,7 @@
 #include <exec/expression/eval.h>
 #include <exec/expression/utils.h>
 #include <exec/kernel.h>
+#include <exec/topn_common.h>
 #include <util/macro.h>
 
 #include <algorithm>
@@ -20,37 +21,6 @@ struct RowRef {
     uint32_t batch_idx;
     uint32_t row_idx;
 };
-
-template <typename T>
-int Compare3(const T& a, const T& b) {
-    if (a < b) {
-        return -1;
-    }
-    if (a > b) {
-        return 1;
-    }
-    return 0;
-}
-
-int CompareRowRefs(const core::Column& col_a, size_t row_a, const core::Column& col_b,
-                   size_t row_b) {
-    bool a_null = col_a.IsNull(row_a);
-    bool b_null = col_b.IsNull(row_b);
-    if (a_null != b_null) {
-        return a_null ? -1 : 1;
-    }
-    if (a_null) {
-        return 0;
-    }
-    switch (col_a.GetDataType()) {
-        case core::DataType::String:
-            return Compare3(ReadStringRow(col_a, row_a), ReadStringRow(col_b, row_b));
-        case core::DataType::Double:
-            return Compare3(ReadDoubleRow(col_a, row_a), ReadDoubleRow(col_b, row_b));
-        default:
-            return Compare3(ReadIntegerRow(col_a, row_a), ReadIntegerRow(col_b, row_b));
-    }
-}
 }  // namespace
 
 TopNSink::TopNSink(IOperator& downstream, std::vector<SortUnit> sort_units,
@@ -129,17 +99,8 @@ void TopNSink::Finalize() {
     if (limit_ && prefix < total_rows) {
         refs.reserve(prefix);
         if (prefix > 0) {
-            for_each_input_row([&](uint32_t b, uint32_t r) {
-                RowRef ref{b, r};
-                if (refs.size() < prefix) {
-                    refs.push_back(ref);
-                    std::push_heap(refs.begin(), refs.end(), less);
-                } else if (less(ref, refs.front())) {
-                    std::pop_heap(refs.begin(), refs.end(), less);
-                    refs.back() = ref;
-                    std::push_heap(refs.begin(), refs.end(), less);
-                }
-            });
+            for_each_input_row(
+                [&](uint32_t b, uint32_t r) { OfferToTopN(refs, prefix, RowRef{b, r}, less); });
             std::sort_heap(refs.begin(), refs.end(), less);
         }
     } else {

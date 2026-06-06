@@ -6,10 +6,11 @@
 #include <exec/kernel/internal.h>
 #include <util/macro.h>
 
+#include <absl/container/flat_hash_set.h>
+
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 namespace columnar::exec::kernel {
@@ -131,14 +132,14 @@ uint64_t CountNonNull(const core::Column& col, const std::vector<uint32_t>* sele
     return c;
 }
 
-void DistinctInts(const core::Column& col, std::unordered_set<int64_t>& out,
+void DistinctInts(const core::Column& col, absl::flat_hash_set<int64_t>& out,
                   const std::vector<uint32_t>* selection) {
     VisitIntegerCol(col, [&](const auto& typed) {
         ForEachNonNullCol(typed, selection, [&](auto v) { out.insert(static_cast<int64_t>(v)); });
     });
 }
 
-void DistinctStrings(const core::Column& col, std::unordered_set<std::string>& out,
+void DistinctStrings(const core::Column& col, absl::flat_hash_set<std::string>& out,
                      const std::vector<uint32_t>* selection) {
     if (col.GetDataType() != core::DataType::String) {
         THROW_RUNTIME_ERROR("DistinctStrings: not a string column");

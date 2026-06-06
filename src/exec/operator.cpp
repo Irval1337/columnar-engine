@@ -6,6 +6,7 @@
 #include <exec/global_aggregate_operator.h>
 #include <exec/hash_aggregate_operator.h>
 #include <exec/kernel.h>
+#include <exec/late_topn.h>
 #include <exec/metadata_pruning.h>
 #include <exec/operator_visit.h>
 #include <exec/project_operator.h>
@@ -208,6 +209,15 @@ void PlanRec(const std::shared_ptr<Operator>& op, const core::Schema& table_sche
     VisitOperator(*op, visitor);
 }
 
+bool AllSortsAreColumns(const std::vector<SortUnit>& sort_units) {
+    for (auto& unit : sort_units) {
+        if (unit.expression->type != ExpressionType::Column) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>& op,
                  IOperator& downstream);
 
@@ -245,11 +255,22 @@ struct ExecuteVisitor {
     }
 
     void Visit(const ProjectOperator& project) const {
+        if (TryExecuteLateTopN(reader, project, downstream)) {
+            return;
+        }
         ProjectSink sink(downstream, project.projections);
         ExecuteInto(reader, project.child, sink);
     }
 
     void Visit(const TopNOperator& topn) const {
+        if (topn.limit && topn.child->type == OperatorType::HashAggregation &&
+            AllSortsAreColumns(topn.sort_units)) {
+            auto& aggregate = static_cast<const HashAggregationOperator&>(*topn.child);
+            HashAggregationSink sink(downstream, aggregate.keys, aggregate.aggregations,
+                                     HashAggregateTopN{topn.sort_units, *topn.limit, topn.offset});
+            ExecuteInto(reader, aggregate.child, sink);
+            return;
+        }
         TopNSink sink(downstream, topn.sort_units, topn.limit, topn.offset);
         ExecuteInto(reader, topn.child, sink);
     }

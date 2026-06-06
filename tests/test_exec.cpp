@@ -467,6 +467,39 @@ TEST(GlobalAggregation, FilteredReductionsUseSelection) {
     EXPECT_EQ(result.ColumnAt(3).GetAsString(0), "200");
 }
 
+TEST(HashAggregation, TopNFusionHeapAndCountTie) {
+    core::Schema schema({core::Field("k", core::DataType::Int64)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhBatchWriter writer(ss, schema);
+        core::Batch batch(schema);
+        for (int64_t k : {1, 1, 1, 2, 2, 3, 3, 4, 5, 5}) {
+            batch.ColumnAt(0).AppendFromString(std::to_string(k));
+        }
+        writer.Write(batch);
+        writer.Flush();
+    }
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+
+    auto plan = exec::MakeTopN(
+        exec::MakeHashAggregation(exec::MakeScan(),
+                                  exec::MakeColumnExpr("k", core::DataType::Int64), "k",
+                                  {exec::Count("c")}),
+        {exec::SortUnit{exec::MakeColumnExpr("c", core::DataType::Int64), false}}, 2);
+
+    auto batches = exec::Execute(reader, plan);
+    ASSERT_EQ(batches.size(), 1);
+    auto& result = batches[0];
+    ASSERT_EQ(result.RowsCount(), 2);
+    size_t k = result.GetSchema().GetIndex("k");
+    size_t c = result.GetSchema().GetIndex("c");
+    EXPECT_EQ(result.ColumnAt(k).GetAsString(0), "1");
+    EXPECT_EQ(result.ColumnAt(c).GetAsString(0), "3");
+    EXPECT_EQ(result.ColumnAt(k).GetAsString(1), "2");
+    EXPECT_EQ(result.ColumnAt(c).GetAsString(1), "2");
+}
+
 TEST(HashAggregation, GroupByIntKey) {
     auto plan = exec::MakeHashAggregation(exec::MakeScan(),
                                           exec::MakeColumnExpr("UserID", core::DataType::Int64),
@@ -1192,6 +1225,51 @@ TEST(ClickBenchQueries, Q23SelectStarFilteredByUrlGoogle) {
     size_t url_index = result.GetSchema().GetIndex("URL");
     EXPECT_EQ(result.ColumnAt(url_index).GetAsString(0), "google.com");
     EXPECT_EQ(result.ColumnAt(url_index).GetAsString(1), "https://google.org/path");
+}
+
+TEST(TopNOperator, LateMaterializedHeapEvictionAndTieBreak) {
+    core::Schema schema(
+        {core::Field("g", core::DataType::Int64), core::Field("s", core::DataType::Int64)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhBatchWriter writer(ss, schema);
+        auto write_group = [&](std::vector<int64_t> g, std::vector<int64_t> s) {
+            core::Batch batch(schema);
+            for (size_t i = 0; i < g.size(); ++i) {
+                batch.ColumnAt(0).AppendFromString(std::to_string(g[i]));
+                batch.ColumnAt(1).AppendFromString(std::to_string(s[i]));
+            }
+            writer.Write(batch);
+        };
+        write_group({0, 1, 2}, {5, 3, 1});
+        write_group({3, 4, 5}, {3, 4, 3});
+        writer.Flush();
+    }
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+
+    auto plan = exec::MakeProject(
+        exec::MakeTopN(
+            exec::MakeFilter(exec::MakeScan(),
+                             exec::MakeBinary(exec::BinaryFunction::GreaterOrEqual,
+                                              exec::MakeColumnExpr("g", core::DataType::Int64),
+                                              exec::MakeConst(int64_t{0}))),
+            {exec::SortUnit{exec::MakeColumnExpr("s", core::DataType::Int64), true}}, 3),
+        {exec::ProjectionUnit{exec::MakeColumnExpr("g", core::DataType::Int64), "g"},
+         exec::ProjectionUnit{exec::MakeColumnExpr("s", core::DataType::Int64), "s"}});
+
+    auto batches = exec::Execute(reader, plan);
+    ASSERT_EQ(batches.size(), 1);
+    auto& result = batches[0];
+    ASSERT_EQ(result.RowsCount(), 3);
+    size_t g = result.GetSchema().GetIndex("g");
+    size_t s = result.GetSchema().GetIndex("s");
+    EXPECT_EQ(result.ColumnAt(g).GetAsString(0), "2");
+    EXPECT_EQ(result.ColumnAt(s).GetAsString(0), "1");
+    EXPECT_EQ(result.ColumnAt(g).GetAsString(1), "1");
+    EXPECT_EQ(result.ColumnAt(s).GetAsString(1), "3");
+    EXPECT_EQ(result.ColumnAt(g).GetAsString(2), "3");
+    EXPECT_EQ(result.ColumnAt(s).GetAsString(2), "3");
 }
 
 TEST(ClickBenchQueries, HavingAndDateQueriesRunOnMiniData) {

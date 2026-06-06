@@ -8,13 +8,21 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace columnar::exec {
+struct HashAggregateTopN {
+    std::vector<SortUnit> sort_units;
+    size_t limit = 0;
+    std::optional<size_t> offset;
+};
+
 class HashAggregationSink final : public IOperator {
 public:
     HashAggregationSink(IOperator& downstream, std::vector<ProjectionUnit> keys,
-                        std::vector<AggregationUnit> aggregations);
+                        std::vector<AggregationUnit> aggregations,
+                        std::optional<HashAggregateTopN> top_n = std::nullopt);
 
     HashAggregationSink(const HashAggregationSink&) = delete;
     HashAggregationSink& operator=(const HashAggregationSink&) = delete;
@@ -27,6 +35,7 @@ public:
 
 private:
     void ReserveForBatch(size_t selected_rows, size_t max_new_groups);
+    void FinalizeTopN(const HashAggregateTopN& spec);
 
     IOperator& downstream_;
     std::vector<ProjectionUnit> keys_;
@@ -38,5 +47,6 @@ private:
     util::StringArena string_arena_;
     AggStateBuffer state_;
     std::unique_ptr<GroupKeyTable> key_table_;
+    std::optional<HashAggregateTopN> top_n_;
 };
 }  // namespace columnar::exec

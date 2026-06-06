@@ -1,5 +1,6 @@
 #include <exec/hash_aggregate_operator.h>
 
+#include <core/column_factory.h>
 #include <core/datatype.h>
 #include <core/field.h>
 #include <exec/column_dispatch.h>
@@ -7,9 +8,12 @@
 #include <exec/expression/eval.h>
 #include <exec/expression/utils.h>
 #include <exec/kernel.h>
+#include <exec/topn_common.h>
 #include <util/macro.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -43,14 +47,16 @@ core::Schema MakeHashAggregateSchema(const std::vector<ProjectionUnit>& keys,
 }  // namespace
 
 HashAggregationSink::HashAggregationSink(IOperator& downstream, std::vector<ProjectionUnit> keys,
-                                         std::vector<AggregationUnit> aggregations)
+                                         std::vector<AggregationUnit> aggregations,
+                                         std::optional<HashAggregateTopN> top_n)
     : downstream_(downstream),
       keys_(std::move(keys)),
       aggregations_(std::move(aggregations)),
       output_schema_(MakeHashAggregateSchema(keys_, aggregations_)),
       needs_dense_(RequiresDenseBatch(keys_) || RequiresDenseBatch(aggregations_)),
       state_(aggregations_, string_arena_),
-      key_table_(GroupKeyTable::Make(keys_, string_arena_)) {
+      key_table_(GroupKeyTable::Make(keys_, string_arena_)),
+      top_n_(std::move(top_n)) {
 }
 
 void HashAggregationSink::ReserveForBatch(size_t selected_rows, size_t max_new_groups) {
@@ -127,11 +133,87 @@ void HashAggregationSink::Consume(core::Batch batch) {
 }
 
 void HashAggregationSink::Finalize() {
+    if (top_n_) {
+        FinalizeTopN(*top_n_);
+        return;
+    }
     core::Batch out(output_schema_, state_.GroupsCount());
     for (uint32_t group_id = 0; group_id < state_.GroupsCount(); ++group_id) {
         key_table_->AppendKeys(group_id, out);
         for (size_t i = 0; i < aggregations_.size(); ++i) {
             state_.AppendResult(i, group_id, out.ColumnAt(keys_.size() + i));
+        }
+    }
+    downstream_.Consume(std::move(out));
+    downstream_.Finalize();
+}
+
+void HashAggregationSink::FinalizeTopN(const HashAggregateTopN& spec) {
+    uint32_t groups = state_.GroupsCount();
+    size_t keys_count = keys_.size();
+    size_t offset = spec.offset.value_or(0);
+    size_t prefix = offset + spec.limit;
+    auto& fields = output_schema_.GetFields();
+
+    std::vector<size_t> output_index;
+    output_index.reserve(spec.sort_units.size());
+    bool need_keys = false;
+    for (auto& unit : spec.sort_units) {
+        size_t index =
+            output_schema_.GetIndex(static_cast<const ColumnExpr&>(*unit.expression).name);
+        output_index.push_back(index);
+        need_keys = need_keys || index < keys_count;
+    }
+
+    core::Batch keys_batch;
+    if (need_keys) {
+        std::vector<core::Field> key_fields(fields.begin(), fields.begin() + keys_count);
+        keys_batch = core::Batch(core::Schema(std::move(key_fields)), groups);
+        for (uint32_t group_id = 0; group_id < groups; ++group_id) {
+            key_table_->AppendKeys(group_id, keys_batch);
+        }
+    }
+
+    std::vector<std::unique_ptr<core::Column>> agg_columns(spec.sort_units.size());
+    std::vector<const core::Column*> sort_columns(spec.sort_units.size());
+    for (size_t s = 0; s < spec.sort_units.size(); ++s) {
+        size_t index = output_index[s];
+        if (index < keys_count) {
+            sort_columns[s] = &keys_batch.ColumnAt(index);
+            continue;
+        }
+        auto& field = fields[index];
+        auto column = core::MakeColumn(field.type, field.nullable);
+        column->Reserve(groups);
+        for (uint32_t group_id = 0; group_id < groups; ++group_id) {
+            state_.AppendResult(index - keys_count, group_id, *column);
+        }
+        sort_columns[s] = column.get();
+        agg_columns[s] = std::move(column);
+    }
+
+    auto less = [&](uint32_t a, uint32_t b) {
+        for (size_t s = 0; s < sort_columns.size(); ++s) {
+            int cmp = CompareRowRefs(*sort_columns[s], a, *sort_columns[s], b);
+            if (cmp != 0) {
+                return spec.sort_units[s].ascending ? cmp < 0 : cmp > 0;
+            }
+        }
+        return a < b;
+    };
+
+    std::vector<uint32_t> refs;
+    refs.reserve(prefix);
+    for (uint32_t group_id = 0; group_id < groups; ++group_id) {
+        OfferToTopN(refs, prefix, group_id, less);
+    }
+    FinishTopN(refs, offset, less);
+
+    core::Batch out(output_schema_, refs.size());
+    for (uint32_t group_id : refs) {
+        key_table_->AppendKeys(group_id, out);
+        for (size_t i = 0; i < aggregations_.size(); ++i) {
+            state_.AppendResult(i, group_id, out.ColumnAt(keys_count + i));
         }
     }
     downstream_.Consume(std::move(out));
