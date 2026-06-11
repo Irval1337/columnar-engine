@@ -13,6 +13,8 @@
 #include <vector>
 
 namespace columnar::exec {
+inline constexpr char kRowIdColumn[] = "__rowid__";
+
 class IOperator {
 public:
     virtual ~IOperator() = default;
@@ -45,6 +47,7 @@ enum class OperatorType {
     Filter,
     Project,
     TopN,
+    LateMaterialize,
 };
 
 struct ProjectionUnit {
@@ -74,6 +77,7 @@ struct TypedOperator : public Operator {
 
 struct ScanOperator final : public TypedOperator<OperatorType::Scan> {
     core::Schema schema;
+    bool emit_row_id = false;
 };
 
 struct CountTableOperator final : public TypedOperator<OperatorType::CountTable> {
@@ -116,6 +120,16 @@ struct FilterOperator final : public TypedOperator<OperatorType::Filter> {
 
 struct ProjectOperator final : public TypedOperator<OperatorType::Project> {
     ProjectOperator(std::shared_ptr<Operator> child, std::vector<ProjectionUnit> projections)
+        : child(std::move(child)), projections(std::move(projections)) {
+    }
+
+    std::shared_ptr<Operator> child;
+    std::vector<ProjectionUnit> projections;
+};
+
+struct LateMaterializeOperator final : public TypedOperator<OperatorType::LateMaterialize> {
+    LateMaterializeOperator(std::shared_ptr<Operator> child,
+                            std::vector<ProjectionUnit> projections)
         : child(std::move(child)), projections(std::move(projections)) {
     }
 
@@ -171,6 +185,11 @@ inline std::shared_ptr<HashAggregationOperator> MakeHashAggregation(
     std::vector<ProjectionUnit> keys;
     keys.push_back(ProjectionUnit{std::move(key), std::move(key_name)});
     return MakeHashAggregation(std::move(child), std::move(keys), std::move(aggregations));
+}
+
+inline std::shared_ptr<LateMaterializeOperator> MakeLateMaterialize(
+    std::shared_ptr<Operator> child, std::vector<ProjectionUnit> projections) {
+    return std::make_shared<LateMaterializeOperator>(std::move(child), std::move(projections));
 }
 
 inline std::shared_ptr<TopNOperator> MakeTopN(std::shared_ptr<Operator> child,

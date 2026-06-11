@@ -113,9 +113,13 @@ AggStateBuffer::AggStateBuffer(const std::vector<AggregationUnit>& aggregations,
                                util::StringArena& arena)
     : aggregations_(aggregations), arena_(arena) {
     arrays_.reserve(aggregations_.size());
+    column_types_.reserve(aggregations_.size());
     for (auto& unit : aggregations_) {
         arrays_.push_back(MakeArray(unit));
+        column_types_.push_back(unit.expression != nullptr ? GetExpressionType(*unit.expression)
+                                                           : core::DataType::Int64);
     }
+    column_nullable_.assign(aggregations_.size(), true);
     if (aggregations_.size() == 1 && aggregations_[0].type == AggregationType::Count) {
         single_count_ = &std::get<agg_array::Count>(arrays_[0]);
     }
@@ -146,6 +150,16 @@ void AggStateBuffer::Reserve(size_t n) {
     }
 }
 
+void AggStateBuffer::BindColumns(const std::vector<const core::Column*>& agg_cols) {
+    for (size_t i = 0; i < aggregations_.size(); ++i) {
+        const core::Column* col = agg_cols[i];
+        if (col != nullptr) {
+            column_types_[i] = col->GetDataType();
+            column_nullable_[i] = col->IsNullable();
+        }
+    }
+}
+
 void AggStateBuffer::UpdateRow(uint32_t group_id, const std::vector<const core::Column*>& agg_cols,
                                size_t row) {
     for (size_t i = 0; i < aggregations_.size(); ++i) {
@@ -155,24 +169,26 @@ void AggStateBuffer::UpdateRow(uint32_t group_id, const std::vector<const core::
             continue;
         }
         const core::Column& col = *agg_cols[i];
-        if (col.IsNull(row)) {
+        if (column_nullable_[i] && col.IsNull(row)) {
             continue;
         }
+        core::DataType col_type = column_types_[i];
         switch (type) {
             case AggregationType::Sum: {
                 auto& array = std::get<agg_array::Sum>(arrays_[i]);
                 array.has_value.Set(group_id);
                 if (array.is_double) {
                     array.double_values[group_id] +=
-                        static_cast<long double>(ReadDoubleRow(col, row));
+                        static_cast<long double>(ReadDoubleRowTyped(col, col_type, row));
                 } else {
-                    array.int_values[group_id] += ReadIntegerRow(col, row);
+                    array.int_values[group_id] += ReadIntegerRowTyped(col, col_type, row);
                 }
                 break;
             }
             case AggregationType::Avg: {
                 auto& array = std::get<agg_array::Avg>(arrays_[i]);
-                array.int_sums[group_id] += static_cast<__int128>(ReadIntegerRow(col, row));
+                array.int_sums[group_id] +=
+                    static_cast<__int128>(ReadIntegerRowTyped(col, col_type, row));
                 ++array.counts[group_id];
                 break;
             }
@@ -185,7 +201,7 @@ void AggStateBuffer::UpdateRow(uint32_t group_id, const std::vector<const core::
                         set.insert(arena_.Intern(value));
                     }
                 } else {
-                    array.ints[group_id].insert(ReadIntegerRow(col, row));
+                    array.ints[group_id].insert(ReadIntegerRowTyped(col, col_type, row));
                 }
                 break;
             }
@@ -202,14 +218,14 @@ void AggStateBuffer::UpdateRow(uint32_t group_id, const std::vector<const core::
                         array.has_value.Set(group_id);
                     }
                 } else if (array.value_type == core::DataType::Double) {
-                    double value = ReadDoubleRow(col, row);
+                    double value = ReadDoubleRowTyped(col, col_type, row);
                     auto& slot = array.double_values[group_id];
                     if (!has || (is_min ? value < slot : value > slot)) {
                         slot = value;
                         array.has_value.Set(group_id);
                     }
                 } else {
-                    int64_t value = ReadIntegerRow(col, row);
+                    int64_t value = ReadIntegerRowTyped(col, col_type, row);
                     auto& slot = array.int_values[group_id];
                     if (!has || (is_min ? value < slot : value > slot)) {
                         slot = value;

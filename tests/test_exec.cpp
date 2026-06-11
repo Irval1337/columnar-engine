@@ -10,6 +10,7 @@
 #include <exec/metadata_pruning.h>
 #include <exec/operator.h>
 
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <set>
@@ -1227,7 +1228,159 @@ TEST(ClickBenchQueries, Q23SelectStarFilteredByUrlGoogle) {
     EXPECT_EQ(result.ColumnAt(url_index).GetAsString(1), "https://google.org/path");
 }
 
-TEST(TopNOperator, LateMaterializedHeapEvictionAndTieBreak) {
+TEST(LateMaterialize, MaterializesPayloadAcrossRowGroups) {
+    core::Schema schema({core::Field("k", core::DataType::Int64),
+                         core::Field("s", core::DataType::Int64),
+                         core::Field("p", core::DataType::Int64)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhBatchWriter writer(ss, schema);
+        auto write_group = [&](std::vector<std::array<int64_t, 3>> rows) {
+            core::Batch batch(schema);
+            for (auto& row : rows) {
+                batch.ColumnAt(0).AppendFromString(std::to_string(row[0]));
+                batch.ColumnAt(1).AppendFromString(std::to_string(row[1]));
+                batch.ColumnAt(2).AppendFromString(std::to_string(row[2]));
+            }
+            writer.Write(batch);
+        };
+        write_group({{10, 5, 1000}, {11, 3, 1001}, {12, 2, 1002}});
+        write_group({{13, 1, 1003}, {14, 4, 1004}, {15, 3, 1005}});
+        writer.Flush();
+    }
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+
+    auto plan = exec::MakeProject(
+        exec::MakeTopN(
+            exec::MakeFilter(exec::MakeScan(),
+                             exec::MakeBinary(exec::BinaryFunction::GreaterOrEqual,
+                                              exec::MakeColumnExpr("k", core::DataType::Int64),
+                                              exec::MakeConst(int64_t{0}))),
+            {exec::SortUnit{exec::MakeColumnExpr("s", core::DataType::Int64), true}}, 2),
+        {exec::ProjectionUnit{exec::MakeColumnExpr("k", core::DataType::Int64), "k"},
+         exec::ProjectionUnit{exec::MakeColumnExpr("s", core::DataType::Int64), "s"},
+         exec::ProjectionUnit{exec::MakeColumnExpr("p", core::DataType::Int64), "p"}});
+
+    auto batches = exec::Execute(reader, plan);
+    ASSERT_EQ(batches.size(), 1);
+    auto& result = batches[0];
+    ASSERT_EQ(result.RowsCount(), 2);
+    size_t k = result.GetSchema().GetIndex("k");
+    size_t s = result.GetSchema().GetIndex("s");
+    size_t p = result.GetSchema().GetIndex("p");
+    EXPECT_EQ(result.ColumnAt(k).GetAsString(0), "13");
+    EXPECT_EQ(result.ColumnAt(s).GetAsString(0), "1");
+    EXPECT_EQ(result.ColumnAt(p).GetAsString(0), "1003");
+    EXPECT_EQ(result.ColumnAt(k).GetAsString(1), "12");
+    EXPECT_EQ(result.ColumnAt(s).GetAsString(1), "2");
+    EXPECT_EQ(result.ColumnAt(p).GetAsString(1), "1002");
+}
+
+TEST(LateMaterialize, RespectsOffsetAndTieBreakAcrossRowGroups) {
+    core::Schema schema({core::Field("k", core::DataType::Int64),
+                         core::Field("s", core::DataType::Int64),
+                         core::Field("p", core::DataType::Int64)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhBatchWriter writer(ss, schema);
+        auto write_group = [&](std::vector<std::array<int64_t, 3>> rows) {
+            core::Batch batch(schema);
+            for (auto& row : rows) {
+                batch.ColumnAt(0).AppendFromString(std::to_string(row[0]));
+                batch.ColumnAt(1).AppendFromString(std::to_string(row[1]));
+                batch.ColumnAt(2).AppendFromString(std::to_string(row[2]));
+            }
+            writer.Write(batch);
+        };
+        write_group({{10, 1, 100}, {11, 1, 101}});
+        write_group({{12, 1, 102}, {13, 2, 103}});
+        writer.Flush();
+    }
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+
+    auto plan = exec::MakeProject(
+        exec::MakeTopN(
+            exec::MakeFilter(exec::MakeScan(),
+                             exec::MakeBinary(exec::BinaryFunction::GreaterOrEqual,
+                                              exec::MakeColumnExpr("k", core::DataType::Int64),
+                                              exec::MakeConst(int64_t{0}))),
+            {exec::SortUnit{exec::MakeColumnExpr("s", core::DataType::Int64), true}}, 2, 1),
+        {exec::ProjectionUnit{exec::MakeColumnExpr("k", core::DataType::Int64), "k"},
+         exec::ProjectionUnit{exec::MakeColumnExpr("s", core::DataType::Int64), "s"},
+         exec::ProjectionUnit{exec::MakeColumnExpr("p", core::DataType::Int64), "p"}});
+
+    auto batches = exec::Execute(reader, plan);
+    ASSERT_EQ(batches.size(), 1);
+    auto& result = batches[0];
+    ASSERT_EQ(result.RowsCount(), 2);
+    size_t k = result.GetSchema().GetIndex("k");
+    size_t p = result.GetSchema().GetIndex("p");
+    EXPECT_EQ(result.ColumnAt(k).GetAsString(0), "11");
+    EXPECT_EQ(result.ColumnAt(p).GetAsString(0), "101");
+    EXPECT_EQ(result.ColumnAt(k).GetAsString(1), "12");
+    EXPECT_EQ(result.ColumnAt(p).GetAsString(1), "102");
+}
+
+TEST(LateMaterialize, EmptyTopNProducesNoBatches) {
+    core::Schema schema({core::Field("k", core::DataType::Int64),
+                         core::Field("s", core::DataType::Int64),
+                         core::Field("p", core::DataType::Int64)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhBatchWriter writer(ss, schema);
+        core::Batch batch(schema);
+        batch.ColumnAt(0).AppendFromString("1");
+        batch.ColumnAt(1).AppendFromString("1");
+        batch.ColumnAt(2).AppendFromString("100");
+        writer.Write(batch);
+        writer.Flush();
+    }
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+
+    auto plan = exec::MakeProject(
+        exec::MakeTopN(
+            exec::MakeFilter(exec::MakeScan(),
+                             exec::MakeBinary(exec::BinaryFunction::Less,
+                                              exec::MakeColumnExpr("k", core::DataType::Int64),
+                                              exec::MakeConst(int64_t{0}))),
+            {exec::SortUnit{exec::MakeColumnExpr("s", core::DataType::Int64), true}}, 2),
+        {exec::ProjectionUnit{exec::MakeColumnExpr("k", core::DataType::Int64), "k"},
+         exec::ProjectionUnit{exec::MakeColumnExpr("p", core::DataType::Int64), "p"}});
+
+    auto batches = exec::Execute(reader, plan);
+    EXPECT_TRUE(batches.empty());
+}
+
+TEST(LateMaterialize, RejectsNonColumnProjection) {
+    core::Schema schema({core::Field("k", core::DataType::Int64)});
+    std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+    {
+        bruh::BruhBatchWriter writer(ss, schema);
+        core::Batch batch(schema);
+        batch.ColumnAt(0).AppendFromString("1");
+        writer.Write(batch);
+        writer.Flush();
+    }
+    auto buf = ss.str();
+    bruh::BruhBatchReader reader(AsBytes(buf));
+
+    auto plan = exec::MakeLateMaterialize(
+        exec::MakeFilter(exec::MakeScan(),
+                         exec::MakeBinary(exec::BinaryFunction::GreaterOrEqual,
+                                          exec::MakeColumnExpr("k", core::DataType::Int64),
+                                          exec::MakeConst(int64_t{0}))),
+        {exec::ProjectionUnit{exec::MakeBinary(exec::BinaryFunction::Plus,
+                                               exec::MakeColumnExpr("k", core::DataType::Int64),
+                                               exec::MakeConst(int64_t{1})),
+                              "x"}});
+
+    EXPECT_THROW(exec::Execute(reader, plan), std::runtime_error);
+}
+
+TEST(TopNOperator, HeapEvictionAndTieBreak) {
     core::Schema schema(
         {core::Field("g", core::DataType::Int64), core::Field("s", core::DataType::Int64)});
     std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);

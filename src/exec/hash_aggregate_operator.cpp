@@ -128,6 +128,7 @@ void HashAggregationSink::Consume(core::Batch batch) {
     }
 
     const std::vector<uint32_t>* selection = batch.HasSelection() ? &batch.Selection() : nullptr;
+    state_.BindColumns(agg_cols);
     key_table_->Consume(key_cols, agg_cols, selection, rows, state_);
     input_rows_seen_ += selected_rows;
 }

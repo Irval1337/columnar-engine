@@ -6,13 +6,16 @@
 #include <exec/global_aggregate_operator.h>
 #include <exec/hash_aggregate_operator.h>
 #include <exec/kernel.h>
-#include <exec/late_topn.h>
+#include <exec/late_materialize_operator.h>
 #include <exec/metadata_pruning.h>
 #include <exec/operator_visit.h>
 #include <exec/project_operator.h>
 #include <exec/topn_operator.h>
 #include <util/macro.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -41,15 +44,6 @@ core::Batch MakeCountBatch(const CountTableOperator& op, uint64_t rows) {
     return batch;
 }
 
-void ExecuteScanInto(bruh::BruhBatchReader& reader, const ScanOperator& scan,
-                     IOperator& downstream) {
-    auto column_indexes = reader.ResolveColumnNames(ScanColumnNames(scan));
-    for (size_t group = 0; group < reader.NumRowGroups(); ++group) {
-        downstream.Consume(reader.ReadRowGroup(group, column_indexes));
-    }
-    downstream.Finalize();
-}
-
 core::Batch ConcatColumns(core::Batch&& left, core::Batch&& right) {
     std::vector<core::Field> fields = left.GetSchema().GetFields();
     for (auto& field : right.GetSchema().GetFields()) {
@@ -65,6 +59,35 @@ core::Batch ConcatColumns(core::Batch&& left, core::Batch&& right) {
         columns.push_back(std::move(column));
     }
     return out;
+}
+
+core::Batch MakeRowIdBatch(size_t group, size_t rows) {
+    if (group > std::numeric_limits<uint32_t>::max() ||
+        rows > std::numeric_limits<uint32_t>::max()) {
+        THROW_RUNTIME_ERROR("Row id is out of 32-bit range");
+    }
+    std::vector<int64_t> ids(rows);
+    uint64_t base = static_cast<uint64_t>(group) << 32;
+    for (size_t row = 0; row < rows; ++row) {
+        ids[row] = static_cast<int64_t>(base | row);
+    }
+    core::Batch batch(core::Schema({core::Field(kRowIdColumn, core::DataType::Int64)}));
+    batch.GetColumns()[0] =
+        std::make_unique<core::Int64Column>(std::move(ids), util::BitVector(), false);
+    return batch;
+}
+
+void ExecuteScanInto(bruh::BruhBatchReader& reader, const ScanOperator& scan,
+                     IOperator& downstream) {
+    auto column_indexes = reader.ResolveColumnNames(ScanColumnNames(scan));
+    for (size_t group = 0; group < reader.NumRowGroups(); ++group) {
+        auto batch = reader.ReadRowGroup(group, column_indexes);
+        if (scan.emit_row_id) {
+            batch = ConcatColumns(std::move(batch), MakeRowIdBatch(group, batch.RowsCount()));
+        }
+        downstream.Consume(std::move(batch));
+    }
+    downstream.Finalize();
 }
 
 std::vector<std::string> PayloadColumns(const std::vector<std::string>& scan_names,
@@ -114,12 +137,14 @@ void ExecuteFilterScanLate(bruh::BruhBatchReader& reader,
 void ExecuteFilterScanInto(bruh::BruhBatchReader& reader, const ScanOperator& scan,
                            const std::shared_ptr<Expression>& condition, IOperator& downstream) {
     auto scan_names = ScanColumnNames(scan);
-    std::vector<std::string> filter_names;
-    CollectColumns(*condition, filter_names);
-    auto payload_names = PayloadColumns(scan_names, filter_names);
-    if (!payload_names.empty() && !filter_names.empty()) {
-        ExecuteFilterScanLate(reader, condition, filter_names, payload_names, downstream);
-        return;
+    if (!scan.emit_row_id) {
+        std::vector<std::string> filter_names;
+        CollectColumns(*condition, filter_names);
+        auto payload_names = PayloadColumns(scan_names, filter_names);
+        if (!payload_names.empty() && !filter_names.empty()) {
+            ExecuteFilterScanLate(reader, condition, filter_names, payload_names, downstream);
+            return;
+        }
     }
 
     auto column_indexes = reader.ResolveColumnNames(scan_names);
@@ -128,7 +153,11 @@ void ExecuteFilterScanInto(bruh::BruhBatchReader& reader, const ScanOperator& sc
         if (!PredicateMayMatch(reader, group, *condition)) {
             continue;
         }
-        sink.Consume(reader.ReadRowGroup(group, column_indexes));
+        auto batch = reader.ReadRowGroup(group, column_indexes);
+        if (scan.emit_row_id) {
+            batch = ConcatColumns(std::move(batch), MakeRowIdBatch(group, batch.RowsCount()));
+        }
+        sink.Consume(std::move(batch));
     }
     sink.Finalize();
 }
@@ -144,6 +173,10 @@ struct PlanVisitor {
         std::vector<core::Field> fields;
         fields.reserve(required_columns.size());
         for (auto& name : required_columns) {
+            if (name == kRowIdColumn) {
+                scan.emit_row_id = true;
+                continue;
+            }
             auto* field = table_schema.FindField(name);
             if (field == nullptr) {
                 THROW_RUNTIME_ERROR("Unknown field: " + name);
@@ -201,6 +234,12 @@ struct PlanVisitor {
         }
         PlanRec(topn.child, table_schema, std::move(required_columns));
     }
+
+    void Visit(LateMaterializeOperator& late) const {
+        std::vector<std::string> child_required;
+        child_required.emplace_back(kRowIdColumn);
+        PlanRec(late.child, table_schema, std::move(child_required));
+    }
 };
 
 void PlanRec(const std::shared_ptr<Operator>& op, const core::Schema& table_schema,
@@ -216,6 +255,53 @@ bool AllSortsAreColumns(const std::vector<SortUnit>& sort_units) {
         }
     }
     return true;
+}
+
+bool AllProjectionsAreColumns(const std::vector<ProjectionUnit>& projections) {
+    for (auto& projection : projections) {
+        if (projection.expression->type != ExpressionType::Column) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::shared_ptr<Operator> RewriteLateMaterialize(std::shared_ptr<Operator> op) {
+    if (op->type != OperatorType::Project) {
+        return op;
+    }
+    auto& project = static_cast<const ProjectOperator&>(*op);
+    if (!AllProjectionsAreColumns(project.projections) ||
+        project.child->type != OperatorType::TopN) {
+        return op;
+    }
+    auto& topn = static_cast<const TopNOperator&>(*project.child);
+    if (!topn.limit || topn.sort_units.empty() || !AllSortsAreColumns(topn.sort_units) ||
+        topn.child->type != OperatorType::Filter) {
+        return op;
+    }
+    auto& filter = static_cast<const FilterOperator&>(*topn.child);
+    if (filter.child->type != OperatorType::Scan) {
+        return op;
+    }
+
+    std::vector<std::string> early;
+    CollectColumns(*filter.condition, early);
+    for (auto& unit : topn.sort_units) {
+        CollectColumns(*unit.expression, early);
+    }
+    bool has_late_column = false;
+    for (auto& projection : project.projections) {
+        auto& name = static_cast<const ColumnExpr&>(*projection.expression).name;
+        if (std::find(early.begin(), early.end(), name) == early.end()) {
+            has_late_column = true;
+            break;
+        }
+    }
+    if (!has_late_column) {
+        return op;
+    }
+    return MakeLateMaterialize(project.child, project.projections);
 }
 
 void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>& op,
@@ -255,11 +341,21 @@ struct ExecuteVisitor {
     }
 
     void Visit(const ProjectOperator& project) const {
-        if (TryExecuteLateTopN(reader, project, downstream)) {
-            return;
-        }
         ProjectSink sink(downstream, project.projections);
         ExecuteInto(reader, project.child, sink);
+    }
+
+    void Visit(const LateMaterializeOperator& late) const {
+        LateMaterializeSink sink(downstream, reader, late.projections);
+        if (late.child->type == OperatorType::TopN) {
+            auto& topn = static_cast<const TopNOperator&>(*late.child);
+            if (AllSortsAreColumns(topn.sort_units)) {
+                TopNRowIdSink topn_sink(sink, topn.sort_units, topn.limit, topn.offset);
+                ExecuteInto(reader, topn.child, topn_sink);
+                return;
+            }
+        }
+        ExecuteInto(reader, late.child, sink);
     }
 
     void Visit(const TopNOperator& topn) const {
@@ -284,6 +380,7 @@ void ExecuteInto(bruh::BruhBatchReader& reader, const std::shared_ptr<Operator>&
 }  // namespace
 
 std::vector<core::Batch> Execute(bruh::BruhBatchReader& reader, std::shared_ptr<Operator> op) {
+    op = RewriteLateMaterialize(std::move(op));
     PlanRec(op, reader.GetSchema(), {});
     CollectSink sink;
     ExecuteInto(reader, op, sink);
