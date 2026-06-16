@@ -51,8 +51,8 @@ inline void AppendDouble(core::Column& out, double value) {
     static_cast<core::DoubleColumn&>(out).Append(value);
 }
 
-inline int64_t ReadIntegerRow(const core::Column& col, size_t row) {
-    switch (col.GetDataType()) {
+inline int64_t ReadIntegerRowTyped(const core::Column& col, core::DataType type, size_t row) {
+    switch (type) {
         case core::DataType::Int16:
             return static_cast<const core::Int16Column&>(col).Get(row);
         case core::DataType::Int32:
@@ -73,11 +73,19 @@ inline int64_t ReadIntegerRow(const core::Column& col, size_t row) {
     THROW_RUNTIME_ERROR("Cannot read column row as int64");
 }
 
-inline double ReadDoubleRow(const core::Column& col, size_t row) {
-    if (col.GetDataType() == core::DataType::Double) {
+inline int64_t ReadIntegerRow(const core::Column& col, size_t row) {
+    return ReadIntegerRowTyped(col, col.GetDataType(), row);
+}
+
+inline double ReadDoubleRowTyped(const core::Column& col, core::DataType type, size_t row) {
+    if (type == core::DataType::Double) {
         return static_cast<const core::DoubleColumn&>(col).Get(row);
     }
-    return static_cast<double>(ReadIntegerRow(col, row));
+    return static_cast<double>(ReadIntegerRowTyped(col, type, row));
+}
+
+inline double ReadDoubleRow(const core::Column& col, size_t row) {
+    return ReadDoubleRowTyped(col, col.GetDataType(), row);
 }
 
 inline std::string_view ReadStringRow(const core::Column& col, size_t row) {

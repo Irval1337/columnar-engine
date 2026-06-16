@@ -471,6 +471,14 @@ void WriteColumnStatistics(util::BufWriter& w, const ColumnChunkStatistics& stat
             break;
     }
 }
+
+bool ShouldStoreCompressed(size_t compressed_size, size_t uncompressed_size, double min_ratio) {
+    if (compressed_size >= uncompressed_size) {
+        return false;
+    }
+    return static_cast<long double>(compressed_size) <=
+           static_cast<long double>(uncompressed_size) * min_ratio;
+}
 }  // namespace
 
 void BruhBatchWriter::Write(const core::Batch& batch) {
@@ -505,9 +513,11 @@ void BruhBatchWriter::WriteColumn(ColumnChunkMetaData& chunk, const core::Column
     chunk.statistics = BuildStatistics(col, field, auto_encoding);
 
     util::Compression compression = options_.compression;
+    double compression_min_ratio = options_.compression_min_ratio;
     if (auto it = options_.column_compression.find(col_index);
         it != options_.column_compression.end()) {
         compression = it->second;
+        compression_min_ratio = 1.0;
     }
 
     encode_buf_.clear();
@@ -520,7 +530,8 @@ void BruhBatchWriter::WriteColumn(ColumnChunkMetaData& chunk, const core::Column
     if (compression != util::Compression::None) {
         compress_buf_.clear();
         util::Compress(compression, encode_buf_.data(), encode_buf_.size(), compress_buf_);
-        if (compress_buf_.size() < encode_buf_.size()) {
+        if (ShouldStoreCompressed(compress_buf_.size(), encode_buf_.size(),
+                                  compression_min_ratio)) {
             out = compress_buf_.data();
             out_size = compress_buf_.size();
             chunk.compression = compression;

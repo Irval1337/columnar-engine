@@ -65,7 +65,6 @@ struct Distinct {
 using Any = std::variant<Count, Sum, Avg, MinMax, Distinct>;
 }  // namespace agg_array
 
-
 class AggStateBuffer {
 public:
     AggStateBuffer(const std::vector<AggregationUnit>& aggregations, util::StringArena& arena);
@@ -82,6 +81,8 @@ public:
     uint32_t EmplaceGroup();
 
     void Reserve(size_t n);
+
+    void BindColumns(const std::vector<const core::Column*>& agg_cols);
 
     void OnRow(uint32_t group_id, const std::vector<const core::Column*>& agg_cols, size_t row) {
         if (single_count_ != nullptr) {
@@ -101,6 +102,8 @@ private:
     const std::vector<AggregationUnit>& aggregations_;
     util::StringArena& arena_;
     std::vector<agg_array::Any> arrays_;
+    std::vector<core::DataType> column_types_;
+    std::vector<bool> column_nullable_;
     agg_array::Count* single_count_ = nullptr;
     uint32_t groups_count_ = 0;
 };

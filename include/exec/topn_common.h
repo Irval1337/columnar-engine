@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <string>
 #include <vector>
 
 namespace columnar::exec {
@@ -37,6 +39,52 @@ inline int CompareRowRefs(const core::Column& col_a, size_t row_a, const core::C
             return Compare3(ReadDoubleRow(col_a, row_a), ReadDoubleRow(col_b, row_b));
         default:
             return Compare3(ReadIntegerRow(col_a, row_a), ReadIntegerRow(col_b, row_b));
+    }
+}
+
+struct SortValue {
+    core::DataType type = core::DataType::Int64;
+    bool is_null = false;
+    int64_t int_value = 0;
+    double double_value = 0.0;
+    std::string string_value;
+};
+
+inline SortValue ReadSortValue(const core::Column& col, size_t row) {
+    SortValue value;
+    value.type = col.GetDataType();
+    value.is_null = col.IsNull(row);
+    if (value.is_null) {
+        return value;
+    }
+    switch (value.type) {
+        case core::DataType::String:
+            value.string_value = std::string(ReadStringRow(col, row));
+            break;
+        case core::DataType::Double:
+            value.double_value = ReadDoubleRow(col, row);
+            break;
+        default:
+            value.int_value = ReadIntegerRow(col, row);
+            break;
+    }
+    return value;
+}
+
+inline int CompareSortValues(const SortValue& lhs, const SortValue& rhs) {
+    if (lhs.is_null != rhs.is_null) {
+        return lhs.is_null ? -1 : 1;
+    }
+    if (lhs.is_null) {
+        return 0;
+    }
+    switch (lhs.type) {
+        case core::DataType::String:
+            return Compare3(lhs.string_value, rhs.string_value);
+        case core::DataType::Double:
+            return Compare3(lhs.double_value, rhs.double_value);
+        default:
+            return Compare3(lhs.int_value, rhs.int_value);
     }
 }
 

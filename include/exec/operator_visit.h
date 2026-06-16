@@ -28,6 +28,9 @@ void VisitOperator(const Operator& op, Visitor& visitor) {
         case OperatorType::TopN:
             visitor.Visit(static_cast<const TopNOperator&>(op));
             return;
+        case OperatorType::LateMaterialize:
+            visitor.Visit(static_cast<const LateMaterializeOperator&>(op));
+            return;
     }
     THROW_RUNTIME_ERROR("Unsupported operator type " + std::to_string(static_cast<int>(op.type)));
 }
@@ -55,6 +58,9 @@ void VisitOperator(Operator& op, Visitor& visitor) {
             return;
         case OperatorType::TopN:
             visitor.Visit(static_cast<TopNOperator&>(op));
+            return;
+        case OperatorType::LateMaterialize:
+            visitor.Visit(static_cast<LateMaterializeOperator&>(op));
             return;
     }
     THROW_RUNTIME_ERROR("Unsupported operator type " + std::to_string(static_cast<int>(op.type)));

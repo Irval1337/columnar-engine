@@ -192,6 +192,45 @@ TEST(BruhCompression, AutoCompressionSkipsBiggerResult) {
     EXPECT_EQ(chunk.compressed_size, chunk.uncompressed_size);
 }
 
+TEST(BruhCompression, CompressionMinRatioGatesAllColumns) {
+    core::Schema schema({core::Field("i32", core::DataType::Int32),
+                         core::Field("i64", core::DataType::Int64),
+                         core::Field("s", core::DataType::String)});
+    auto write = [&](double ratio) {
+        bruh::BruhWriterOptions opts;
+        opts.encoding = core::Encoding::Plain;
+        opts.compression = util::Compression::Lz4;
+        opts.compression_min_ratio = ratio;
+        std::stringstream ss(std::ios::in | std::ios::out | std::ios::binary);
+        {
+            bruh::BruhBatchWriter writer(ss, schema, opts);
+            core::Batch batch(schema);
+            for (size_t i = 0; i < 2000; ++i) {
+                batch.ColumnAt(0).AppendFromString("0");
+                batch.ColumnAt(1).AppendFromString("0");
+                batch.ColumnAt(2).AppendFromString("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+            }
+            writer.Write(batch);
+            writer.Flush();
+        }
+        return ss.str();
+    };
+
+    auto strict = write(0.000001);
+    bruh::BruhBatchReader strict_reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(strict.data()), strict.size()});
+    for (auto& chunk : strict_reader.GetMetaData().row_groups[0].columns) {
+        EXPECT_EQ(chunk.compression, util::Compression::None);
+    }
+
+    auto lenient = write(1.0);
+    bruh::BruhBatchReader lenient_reader(
+        util::ByteView{reinterpret_cast<const uint8_t*>(lenient.data()), lenient.size()});
+    for (auto& chunk : lenient_reader.GetMetaData().row_groups[0].columns) {
+        EXPECT_EQ(chunk.compression, util::Compression::Lz4);
+    }
+}
+
 TEST(BruhCompression, PerColumnOverridesGlobal) {
     core::Schema schema(
         {core::Field("a", core::DataType::Int64), core::Field("b", core::DataType::Int64)});

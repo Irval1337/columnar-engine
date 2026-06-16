@@ -16,6 +16,7 @@ namespace columnar::bruh {
 struct BruhWriterOptions {
     util::Compression compression = util::Compression::Lz4;
     core::Encoding encoding = core::Encoding::Auto;
+    double compression_min_ratio = 1.0;
     std::unordered_map<size_t, core::Encoding> column_encoding;
     std::unordered_map<size_t, util::Compression> column_compression;
 };
